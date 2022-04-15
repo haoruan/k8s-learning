@@ -127,14 +127,10 @@ func (c *controller) Run(stopCh <-chan struct{}) {
 // also be helpful.
 func (c *controller) processLoop() {
 	for {
-		obj, err := c.config.Queue.Pop(c.config.Process)
+		_, err := c.config.Queue.Pop(c.config.Process)
 		if err != nil {
 			if err == ErrFIFOClosed {
 				return
-			}
-			if c.config.RetryOnError {
-				// This is the safe way to re-enqueue.
-				c.config.Queue.AddIfNotPresent(obj)
 			}
 		}
 	}
