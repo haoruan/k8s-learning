@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"sync"
-	"time"
 )
 
 type updateNotification struct {
@@ -17,6 +16,42 @@ type addNotification struct {
 
 type deleteNotification struct {
 	oldObj interface{}
+}
+
+// ResourceEventHandler can handle notifications for events that
+// happen to a resource. The events are informational only, so you
+// can't return an error.  The handlers MUST NOT modify the objects
+// received; this concerns not only the top level of structure but all
+// the data structures reachable from it.
+//  * OnAdd is called when an object is added.
+//  * OnUpdate is called when an object is modified. Note that oldObj is the
+//      last known state of the object-- it is possible that several changes
+//      were combined together, so you can't use this to see every single
+//      change. OnUpdate is also called when a re-list happens, and it will
+//      get called even if nothing changed. This is useful for periodically
+//      evaluating or syncing something.
+//  * OnDelete will get the final state of the item if it is known, otherwise
+//      it will get an object of type DeletedFinalStateUnknown. This can
+//      happen if the watch is closed and misses the delete event and we don't
+//      notice the deletion until the subsequent re-list.
+type ResourceEventHandler interface {
+	OnAdd(obj interface{})
+	OnUpdate(oldObj, newObj interface{})
+	OnDelete(obj interface{})
+}
+
+type defaultResourceEventHanlder struct{}
+
+func (h *defaultResourceEventHanlder) OnAdd(obj interface{}) {
+	fmt.Printf("OnAdd, %s\n", obj.(string))
+}
+
+func (h *defaultResourceEventHanlder) OnUpdate(oldObj, newObj interface{}) {
+	fmt.Printf("OnUpdate, %s - %s\n", oldObj.(string), newObj.(string))
+
+}
+func (h *defaultResourceEventHanlder) OnDelete(obj interface{}) {
+	fmt.Printf("OnDelete, %s\n", obj.(string))
 }
 
 // processorListener relays notifications from a sharedProcessor to
@@ -34,7 +69,7 @@ type processorListener struct {
 	nextCh chan interface{}
 	addCh  chan interface{}
 
-	handler func()
+	handler ResourceEventHandler
 
 	// pendingNotifications is an unbounded ring buffer that holds all notifications not yet distributed.
 	// There is one per listener, but a failing/stalled listener will have infinite pendingNotifications
@@ -42,41 +77,15 @@ type processorListener struct {
 	// TODO: This is no worse than before, since reflectors were backed by unbounded DeltaFIFOs, but
 	// we should try to do something better.
 	pendingNotifications []interface{}
-
-	// requestedResyncPeriod is how frequently the listener wants a
-	// full resync from the shared informer, but modified by two
-	// adjustments.  One is imposing a lower bound,
-	// `minimumResyncPeriod`.  The other is another lower bound, the
-	// sharedIndexInformer's `resyncCheckPeriod`, that is imposed (a) only
-	// in AddEventHandlerWithResyncPeriod invocations made after the
-	// sharedIndexInformer starts and (b) only if the informer does
-	// resyncs at all.
-	requestedResyncPeriod time.Duration
-	// resyncPeriod is the threshold that will be used in the logic
-	// for this listener.  This value differs from
-	// requestedResyncPeriod only when the sharedIndexInformer does
-	// not do resyncs, in which case the value here is zero.  The
-	// actual time between resyncs depends on when the
-	// sharedProcessor's `shouldResync` function is invoked and when
-	// the sharedIndexInformer processes `Sync` type Delta objects.
-	resyncPeriod time.Duration
-	// nextResync is the earliest time the listener should get a full resync
-	nextResync time.Time
-	// resyncLock guards access to resyncPeriod and nextResync
-	resyncLock sync.Mutex
 }
 
-func newProcessListener(handler func(), requestedResyncPeriod, resyncPeriod time.Duration, now time.Time, bufferSize int) *processorListener {
+func newProcessListener(handler ResourceEventHandler, bufferSize int) *processorListener {
 	ret := &processorListener{
-		nextCh:                make(chan interface{}),
-		addCh:                 make(chan interface{}),
-		handler:               handler,
-		pendingNotifications:  make([]interface{}, bufferSize),
-		requestedResyncPeriod: requestedResyncPeriod,
-		resyncPeriod:          resyncPeriod,
+		nextCh:               make(chan interface{}),
+		addCh:                make(chan interface{}),
+		handler:              handler,
+		pendingNotifications: make([]interface{}, bufferSize),
 	}
-
-	ret.determineNextResync(now)
 
 	return ret
 }
@@ -90,8 +99,6 @@ func (p *processorListener) run() {
 			p.handler.OnAdd(notification.newObj)
 		case deleteNotification:
 			p.handler.OnDelete(notification.oldObj)
-		default:
-			utilruntime.HandleError(fmt.Errorf("unrecognized notification: %T", next))
 		}
 	}
 }
@@ -140,7 +147,6 @@ type sharedProcessor struct {
 	listenersStarted bool
 	listenersLock    sync.RWMutex
 	listeners        []*processorListener
-	syncingListeners []*processorListener
 	wg               sync.WaitGroup
 }
 
@@ -149,7 +155,6 @@ func (p *sharedProcessor) addListener(listener *processorListener) {
 	defer p.listenersLock.Unlock()
 
 	p.listeners = append(p.listeners, listener)
-	p.syncingListeners = append(p.syncingListeners, listener)
 
 	if p.listenersStarted {
 		p.wg.Add(2)
@@ -168,14 +173,8 @@ func (p *sharedProcessor) distribute(obj interface{}, sync bool) {
 	p.listenersLock.RLock()
 	defer p.listenersLock.RUnlock()
 
-	if sync {
-		for _, listener := range p.syncingListeners {
-			listener.add(obj)
-		}
-	} else {
-		for _, listener := range p.listeners {
-			listener.add(obj)
-		}
+	for _, listener := range p.listeners {
+		listener.add(obj)
 	}
 }
 
@@ -185,14 +184,14 @@ func (p *sharedProcessor) run(stopCh <-chan struct{}) {
 		defer p.listenersLock.RUnlock()
 		for _, listener := range p.listeners {
 			p.wg.Add(2)
-			go func() {
+			go func(l *processorListener) {
 				defer p.wg.Done()
-				listener.run()
-			}()
-			go func() {
+				l.run()
+			}(listener)
+			go func(l *processorListener) {
 				defer p.wg.Done()
-				listener.pop()
-			}()
+				l.pop()
+			}(listener)
 		}
 		p.listenersStarted = true
 	}()

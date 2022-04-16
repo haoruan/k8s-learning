@@ -2,19 +2,17 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"sync"
-	"time"
+)
 
-	"k8s.io/kubernetes/staging/src/k8s.io/apimachinery/pkg/util/wait"
+const (
+	initialBufferSize = 1000
 )
 
 // SharedIndexInformer provides add and get Indexers ability based on SharedInformer.
 type SharedIndexInformer interface {
-	SharedInformer
-	// AddIndexers add indexers to the informer before it starts.
-	AddIndexers(indexers Indexers) error
-	GetIndexer() Indexer
+	AddEventHandler(handler ResourceEventHandler)
+	Run(stopCh <-chan struct{})
 
 	OnAdd(obj interface{})
 	OnUpdate(old interface{}, new interface{})
@@ -36,8 +34,7 @@ type sharedIndexInformer struct {
 	indexer    Indexer
 	controller Controller
 
-	processor             *sharedProcessor
-	cacheMutationDetector MutationDetector
+	processor *sharedProcessor
 
 	listerWatcher ListerWatcher
 
@@ -47,32 +44,19 @@ type sharedIndexInformer struct {
 	// `"apiVersion"` and `"kind"` must also be right.
 	objectType string
 
-	// resyncCheckPeriod is how often we want the reflector's resync timer to fire so it can call
-	// shouldResync to check if any of our listeners need a resync.
-	resyncCheckPeriod time.Duration
-	// defaultEventHandlerResyncPeriod is the default resync period for any handlers added via
-	// AddEventHandler (i.e. they don't specify one and just want to use the shared informer's default
-	// value).
-	defaultEventHandlerResyncPeriod time.Duration
-
 	started, stopped bool
 	startedLock      sync.Mutex
 
 	// blockDeltas gives a way to stop all event distribution so that a late event handler
 	// can safely join the shared informer.
 	blockDeltas sync.Mutex
-
-	transform TransformFunc
 }
 
-func NewSharedIndexInformer(lw ListerWatcher, exampleObject string, defaultEventHandlerResyncPeriod time.Duration, indexers Indexers) SharedIndexInformer {
+func NewSharedIndexInformer(lw ListerWatcher, exampleObject string, indexer Indexer) SharedIndexInformer {
 	sharedIndexInformer := &sharedIndexInformer{
-		indexer:                         NewIndexer(DeletionHandlingMetaNamespaceKeyFunc, indexers),
-		listerWatcher:                   lw,
-		objectType:                      exampleObject,
-		resyncCheckPeriod:               defaultEventHandlerResyncPeriod,
-		defaultEventHandlerResyncPeriod: defaultEventHandlerResyncPeriod,
-		cacheMutationDetector:           NewCacheMutationDetector(fmt.Sprintf("%T", exampleObject)),
+		indexer:       indexer,
+		listerWatcher: lw,
+		objectType:    exampleObject,
 	}
 	return sharedIndexInformer
 }
@@ -82,13 +66,10 @@ func (s *sharedIndexInformer) Run(stopCh <-chan struct{}) {
 	fifo := NewDeltaFIFOWithOptions()
 
 	cfg := &Config{
-		Queue:            fifo,
-		ListerWatcher:    s.listerWatcher,
-		ObjectType:       s.objectType,
-		FullResyncPeriod: s.resyncCheckPeriod,
-		RetryOnError:     false,
-		Process:          s.HandleDeltas,
-		ShouldResync:     s.processor.shouldResync,
+		Queue:         fifo,
+		ListerWatcher: s.listerWatcher,
+		ObjectType:    s.objectType,
+		Process:       s.HandleDeltas,
 	}
 
 	func() {
@@ -97,11 +78,15 @@ func (s *sharedIndexInformer) Run(stopCh <-chan struct{}) {
 
 	// Separate stop channel because Processor should be stopped strictly after controller
 	processorStopCh := make(chan struct{})
-	var wg wait.Group
+	var wg sync.WaitGroup
 	defer wg.Wait()              // Wait for Processor to stop
 	defer close(processorStopCh) // Tell Processor to stop
-	wg.StartWithChannel(processorStopCh, s.cacheMutationDetector.Run)
-	wg.StartWithChannel(processorStopCh, s.processor.run)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.processor.run(stopCh)
+	}()
 
 	defer func() {
 		s.startedLock.Lock()
@@ -112,12 +97,39 @@ func (s *sharedIndexInformer) Run(stopCh <-chan struct{}) {
 	s.controller.Run(stopCh)
 }
 
+func (s *sharedIndexInformer) AddEventHandler(handler ResourceEventHandler) {
+	if s.stopped {
+		return
+	}
+
+	listener := newProcessListener(handler, initialBufferSize)
+
+	if !s.started {
+		s.processor.addListener(listener)
+		return
+	}
+
+	// in order to safely join, we have to
+	// 1. stop sending add/update/delete notifications
+	// 2. do a list against the store
+	// 3. send synthetic "Add" events to the new handler
+	// 4. unblock
+	s.blockDeltas.Lock()
+	defer s.blockDeltas.Unlock()
+
+	s.processor.addListener(listener)
+	// for _, item := range s.indexer.List() {
+	// 	listener.add(addNotification{newObj: item})
+	// }
+
+}
+
 func (s *sharedIndexInformer) HandleDeltas(obj interface{}) error {
 	s.blockDeltas.Lock()
 	defer s.blockDeltas.Unlock()
 
 	if deltas, ok := obj.(Deltas); ok {
-		return processDeltas(s, s.indexer, s.transform, deltas)
+		return processDeltas(s, s.indexer, deltas)
 	}
 	return errors.New("object given as Process argument is not Deltas")
 }
@@ -128,22 +140,14 @@ func processDeltas(
 	// Object which receives event notifications from the given deltas
 	s SharedIndexInformer,
 	clientState Store,
-	transformer TransformFunc,
 	deltas Deltas,
 ) error {
 	// from oldest to newest
 	for _, d := range deltas {
-		obj := d.Object
-		if transformer != nil {
-			var err error
-			obj, err = transformer(obj)
-			if err != nil {
-				return err
-			}
-		}
+		obj := d.obj
 
-		switch d.Type {
-		case Sync, Replaced, Added, Updated:
+		switch d.actionType {
+		case DeltaAdded, DeltaUpdated:
 			if old, exists, err := clientState.Get(obj); err == nil && exists {
 				if err := clientState.Update(obj); err != nil {
 					return err
@@ -155,7 +159,7 @@ func processDeltas(
 				}
 				s.OnAdd(obj)
 			}
-		case Deleted:
+		case DeltaDeleted:
 			if err := clientState.Delete(obj); err != nil {
 				return err
 			}

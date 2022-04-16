@@ -1,11 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
-	"reflect"
-	"sync"
 	"time"
 )
+
+var errorStopRequested = errors.New("stop requested")
 
 // Reflector watches a specified resource and causes all changes to be reflected in the given store.
 type Reflector struct {
@@ -17,47 +18,18 @@ type Reflector struct {
 	// stringification of expectedType otherwise. It is for display
 	// only, and should not be used for parsing or comparison.
 	expectedTypeName string
-	// An example object of the type we expect to place in the store.
-	// Only the type needs to be right, except that when that is
-	// `unstructured.Unstructured` the object's `"apiVersion"` and
-	// `"kind"` must also be right.
-	expectedType reflect.Type
 	// The destination to sync up with the watch source
 	store Store
 	// listerWatcher is used to perform lists and watches.
 	listerWatcher ListerWatcher
-
-	resyncPeriod time.Duration
-	// ShouldResync is invoked periodically and whenever it returns `true` the Store's Resync operation is invoked
-	ShouldResync func() bool
-	// paginatedResult defines whether pagination should be forced for list calls.
-	// It is set based on the result of the initial list call.
-	paginatedResult bool
-	// lastSyncResourceVersion is the resource version token last
-	// observed when doing a sync with the underlying store
-	// it is thread safe, but not synchronized with the underlying store
-	lastSyncResourceVersion string
-	// isLastSyncResourceVersionUnavailable is true if the previous list or watch request with
-	// lastSyncResourceVersion failed with an "expired" or "too large resource version" error.
-	isLastSyncResourceVersionUnavailable bool
-	// lastSyncResourceVersionMutex guards read/write access to lastSyncResourceVersion
-	lastSyncResourceVersionMutex sync.RWMutex
-	// WatchListPageSize is the requested chunk size of initial and resync watch lists.
-	// If unset, for consistent reads (RV="") or reads that opt-into arbitrarily old data
-	// (RV="0") it will default to pager.PageSize, for the rest (RV != "" && RV != "0")
-	// it will turn off pagination to allow serving them from watch cache.
-	// NOTE: It should be used carefully as paginated lists are always served directly from
-	// etcd, which is significantly less efficient and may lead to serious performance and
-	// scalability problems.
-	WatchListPageSize int64
 }
 
-func NewReflector(lw ListerWatcher, expectedType interface{}, store Store, resyncPeriod time.Duration) *Reflector {
+func NewReflector(lw ListerWatcher, store Store) *Reflector {
 	return &Reflector{
-		name:          "reflector",
-		listerWatcher: lw,
-		resyncPeriod:  resyncPeriod,
-		store:         store,
+		name:             "reflector",
+		expectedTypeName: "exptected type",
+		listerWatcher:    lw,
+		store:            store,
 	}
 }
 
@@ -65,16 +37,104 @@ func NewReflector(lw ListerWatcher, expectedType interface{}, store Store, resyn
 // objects and subsequent deltas.
 // Run will exit when stopCh is closed.
 func (r *Reflector) Run(stopCh <-chan struct{}) {
-	fmt.Printf("Starting reflector %s (%s) from %s", r.expectedTypeName, r.resyncPeriod, r.name)
+	fmt.Printf("Starting reflector %s from %s", r.expectedTypeName, r.name)
+loop:
 	for {
 		select {
 		case <-stopCh:
-			break
+			break loop
 		default:
 		}
 		r.ListAndWatch(stopCh)
 
-		time.Sleep(1)
+		time.Sleep(time.Second)
 	}
-	fmt.Printf("Stopping reflector %s (%s) from %s", r.expectedTypeName, r.resyncPeriod, r.name)
+
+	fmt.Printf("Stopping reflector %s from %s\n", r.expectedTypeName, r.name)
+}
+
+// ListAndWatch first lists all items and get the resource version at the moment of call,
+// and then use the resource version to watch.
+// It returns error if ListAndWatch didn't even try to initialize watch.
+func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
+	fmt.Printf("Listing and watching %v from %s\n", r.expectedTypeName, r.name)
+
+	if err := func() error {
+		listCh := make(chan struct{}, 1)
+		var list []string
+		go func() {
+			list, _ = r.listerWatcher.List()
+			close(listCh)
+		}()
+
+		select {
+		case <-stopCh:
+			return nil
+		case <-listCh:
+		}
+		fmt.Printf("Objects listed\n")
+
+		if err := r.syncWith(list); err != nil {
+			return fmt.Errorf("unable to sync list result: %v", err)
+		}
+		fmt.Printf("SyncWith done\n")
+		return nil
+	}(); err != nil {
+		return err
+	}
+
+	for {
+		// give the stopCh a chance to stop the loop, even in case of continue statements further down on errors
+		select {
+		case <-stopCh:
+			return nil
+		default:
+		}
+
+		w, _ := r.listerWatcher.Watch()
+		r.watchHandler(w, stopCh)
+	}
+}
+
+// syncWith replaces the store's items with the given list.
+func (r *Reflector) syncWith(items []string) error {
+	found := make([]interface{}, 0, len(items))
+	for _, item := range items {
+		found = append(found, item)
+	}
+	return r.store.Replace(found)
+}
+
+// watchHandler watches w and keeps *resourceVersion up to date.
+func (r *Reflector) watchHandler(w Interface, stopCh <-chan struct{}) error {
+	eventCount := 0
+
+	// Stopping the watcher should be idempotent and if we return from this function there's no way
+	// we're coming back in with the same watch interface.
+	defer w.Stop()
+
+loop:
+	for {
+		select {
+		case <-stopCh:
+			return errorStopRequested
+		case event, ok := <-w.ResultChan():
+			if !ok {
+				break loop
+			}
+
+			switch event.Type {
+			case EventAdded:
+				r.store.Add(event.f)
+			case EventModified:
+				r.store.Update(event.f)
+			case EventDeleted:
+				r.store.Delete(event.f)
+			}
+			eventCount++
+		}
+	}
+
+	fmt.Printf("%s: Watch close - %v total %v items received\n", r.name, r.expectedTypeName, eventCount)
+	return nil
 }

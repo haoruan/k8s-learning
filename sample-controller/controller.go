@@ -15,13 +15,6 @@ type Controller interface {
 	// and process with the Config's ProcessFunc.  Both of these
 	// continue until `stopCh` is closed.
 	Run(stopCh <-chan struct{})
-
-	// HasSynced delegates to the Config's Queue
-	HasSynced() bool
-
-	// LastSyncResourceVersion delegates to the Reflector when there
-	// is one, otherwise returns the empty string
-	LastSyncResourceVersion() string
 }
 
 // ProcessFunc processes a single object.
@@ -55,12 +48,6 @@ type Config struct {
 
 	// FullResyncPeriod is the period at which ShouldResync is considered.
 	FullResyncPeriod time.Duration
-
-	// ShouldResync is periodically used by the reflector to determine
-	// whether to Resync the Queue. If ShouldResync is `nil` or
-	// returns true, it means the reflector should proceed with the
-	// resync.
-	ShouldResync ShouldResyncFunc
 }
 
 // New makes a new Controller from the given Config.
@@ -82,12 +69,8 @@ func (c *controller) Run(stopCh <-chan struct{}) {
 
 	r := NewReflector(
 		c.config.ListerWatcher,
-		c.config.ObjectType,
 		c.config.Queue,
-		c.config.FullResyncPeriod,
 	)
-	r.ShouldResync = c.config.ShouldResync
-	r.WatchListPageSize = c.config.WatchListPageSize
 
 	c.reflectorMutex.Lock()
 	c.reflector = r
@@ -98,13 +81,14 @@ func (c *controller) Run(stopCh <-chan struct{}) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		r.Run()
+		r.Run(stopCh)
 	}()
 
+loop:
 	for {
 		select {
 		case <-stopCh:
-			break
+			break loop
 		default:
 		}
 
