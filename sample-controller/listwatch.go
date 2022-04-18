@@ -46,6 +46,7 @@ type Lister interface {
 type Watcher interface {
 	// Watch should begin a watch at the specified version.
 	Watch() (Interface, error)
+	SendEvent()
 }
 
 type defaultWatcher struct {
@@ -56,7 +57,8 @@ type defaultWatcher struct {
 
 func (mw *defaultWatcher) SendEvent() {
 	eventtype := []EventType{EventAdded, EventDeleted, EventModified}[rand.Intn(3)]
-	mw.result <- Event{Type: eventtype, f: "type is " + string(eventtype)}
+	eventvalue := []string{"a", "b", "c"}[rand.Intn(3)]
+	mw.result <- Event{Type: eventtype, f: "type is " + string(eventtype) + "," + eventvalue}
 }
 
 // ResultChan returns a channel to use for waiting on events.
@@ -95,7 +97,7 @@ func NewDefaultListWatch() ListerWatcher {
 }
 
 func (lw *defaultListWatch) List() ([]string, error) {
-	return []string{"a", "b"}, nil
+	return []string{"type is replace, a", "type is replace, b", "type is replace, c"}, nil
 }
 
 func (d *defaultListWatch) Watch() (Interface, error) {

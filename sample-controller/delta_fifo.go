@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -111,7 +112,7 @@ type DeltaFIFO struct {
 }
 
 func keyFunction(obj interface{}) (string, error) {
-	return "key" + obj.(string), nil
+	return "key:" + strings.Split(obj.(string), ",")[1], nil
 }
 
 // NewDeltaFIFOWithOptions returns a Queue which can be used to process changes to

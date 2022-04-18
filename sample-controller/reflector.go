@@ -26,8 +26,8 @@ type Reflector struct {
 
 func NewReflector(lw ListerWatcher, store Store) *Reflector {
 	return &Reflector{
-		name:             "reflector",
-		expectedTypeName: "exptected type",
+		name:             "sample-reflector",
+		expectedTypeName: "sample-type",
 		listerWatcher:    lw,
 		store:            store,
 	}
@@ -37,7 +37,7 @@ func NewReflector(lw ListerWatcher, store Store) *Reflector {
 // objects and subsequent deltas.
 // Run will exit when stopCh is closed.
 func (r *Reflector) Run(stopCh <-chan struct{}) {
-	fmt.Printf("Starting reflector %s from %s", r.expectedTypeName, r.name)
+	fmt.Printf("Starting reflector %s from %s\n", r.expectedTypeName, r.name)
 loop:
 	for {
 		select {

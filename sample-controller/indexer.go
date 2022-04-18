@@ -10,7 +10,7 @@ type cache struct {
 }
 
 func NewCache(keyFunc KeyFunc) Indexer {
-	return &cache{keyFunc: keyFunc}
+	return &cache{items: make(map[string]interface{}), keyFunc: keyFunc}
 }
 
 func (c *cache) Add(obj interface{}) error {

@@ -116,6 +116,7 @@ func (p *processorListener) pop() {
 				notification = p.pendingNotifications[0]
 				p.pendingNotifications = p.pendingNotifications[1:]
 			} else { // Nothing to pop
+				notification = nil
 				nextCh = nil // Disable this select case
 			}
 		case notificationToAdd, ok := <-p.addCh:

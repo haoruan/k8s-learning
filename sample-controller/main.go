@@ -32,26 +32,29 @@ func SetupSignalHandler() (stopCh <-chan struct{}) {
 func main() {
 	stopCh := SetupSignalHandler()
 
-	listwatch := &defaultListWatch{}
-	informer := NewSharedIndexInformer(listwatch, "Example", NewCache(keyFunction))
+	listwatch := NewDefaultListWatch()
+	informer := NewSharedIndexInformer(listwatch, NewCache(keyFunction))
 	informer.AddEventHandler(&defaultResourceEventHanlder{})
 
-	informer.Run(stopCh)
-
 	var wg sync.WaitGroup
+	defer wg.Wait()
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 
-		select {
-		case <-stopCh:
-			return
-		default:
-		}
+	loop:
+		for {
+			select {
+			case <-stopCh:
+				break loop
+			default:
+			}
 
-		listwatch.SendEvent()
-		time.Sleep(time.Second)
+			listwatch.SendEvent()
+			time.Sleep(time.Second)
+		}
 	}()
 
-	wg.Wait()
+	informer.Run(stopCh)
 }

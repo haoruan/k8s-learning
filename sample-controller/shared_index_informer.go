@@ -38,12 +38,6 @@ type sharedIndexInformer struct {
 
 	listerWatcher ListerWatcher
 
-	// objectType is an example object of the type this informer is
-	// expected to handle.  Only the type needs to be right, except
-	// that when that is `unstructured.Unstructured` the object's
-	// `"apiVersion"` and `"kind"` must also be right.
-	objectType string
-
 	started, stopped bool
 	startedLock      sync.Mutex
 
@@ -52,11 +46,11 @@ type sharedIndexInformer struct {
 	blockDeltas sync.Mutex
 }
 
-func NewSharedIndexInformer(lw ListerWatcher, exampleObject string, indexer Indexer) SharedIndexInformer {
+func NewSharedIndexInformer(lw ListerWatcher, indexer Indexer) SharedIndexInformer {
 	sharedIndexInformer := &sharedIndexInformer{
 		indexer:       indexer,
 		listerWatcher: lw,
-		objectType:    exampleObject,
+		processor:     &sharedProcessor{},
 	}
 	return sharedIndexInformer
 }
@@ -68,7 +62,6 @@ func (s *sharedIndexInformer) Run(stopCh <-chan struct{}) {
 	cfg := &Config{
 		Queue:         fifo,
 		ListerWatcher: s.listerWatcher,
-		ObjectType:    s.objectType,
 		Process:       s.HandleDeltas,
 	}
 
@@ -85,7 +78,7 @@ func (s *sharedIndexInformer) Run(stopCh <-chan struct{}) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		s.processor.run(stopCh)
+		s.processor.run(processorStopCh)
 	}()
 
 	defer func() {
@@ -147,7 +140,7 @@ func processDeltas(
 		obj := d.obj
 
 		switch d.actionType {
-		case DeltaAdded, DeltaUpdated:
+		case DeltaAdded, DeltaUpdated, DeltaReplaced:
 			if old, exists, err := clientState.Get(obj); err == nil && exists {
 				if err := clientState.Update(obj); err != nil {
 					return err

@@ -40,12 +40,6 @@ type Config struct {
 	// Something that can process a popped Deltas.
 	Process ProcessFunc
 
-	// ObjectType is an example object of the type this controller is
-	// expected to handle.  Only the type needs to be right, except
-	// that when that is `unstructured.Unstructured` the object's
-	// `"apiVersion"` and `"kind"` must also be right.
-	ObjectType string
-
 	// FullResyncPeriod is the period at which ShouldResync is considered.
 	FullResyncPeriod time.Duration
 }
