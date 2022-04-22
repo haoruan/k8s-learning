@@ -231,6 +231,22 @@ func (gb *GraphBuilder) addDependentToOwners(n *node, owners []metav1.OwnerRefer
 	}
 }
 
+// removeDependentFromOwners remove n from owners' dependents list.
+func (gb *GraphBuilder) removeDependentFromOwners(n *node, owners []metav1.OwnerReference) {
+	for _, owner := range owners {
+		ownerNode, ok := gb.uidToNode.Read(owner.UID)
+		if !ok {
+			continue
+		}
+		ownerNode.deleteDependent(n)
+	}
+}
+
+// if an blocking ownerReference points to an object gets removed, or gets set to
+// "BlockOwnerDeletion=false", add the object to the attemptToDelete queue.
+func (gb *GraphBuilder) addUnblockedOwnersToDeleteQueue(removed []metav1.OwnerReference, changed []ownerRefPair) {
+}
+
 // startMonitors ensures the current set of monitors are running. Any newly
 // started monitors will also cause shared informers to be started.
 //

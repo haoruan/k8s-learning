@@ -30,10 +30,24 @@ func (n *node) addDependent(dependent *node) {
 	n.dependents[dependent] = struct{}{}
 }
 
+func (n *node) deleteDependent(dependent *node) {
+	n.dependentsLock.Lock()
+	defer n.dependentsLock.Unlock()
+	delete(n.dependents, dependent)
+}
+
 func (n *node) markDeletingDependents() {
 	n.deletingDependentsLock.Lock()
 	defer n.deletingDependentsLock.Unlock()
 	n.deletingDependents = true
+}
+
+// An object is on a one way trip to its final deletion if it starts being
+// deleted, so we only provide a function to set beingDeleted to true.
+func (n *node) markBeingDeleted() {
+	n.beingDeletedLock.Lock()
+	defer n.beingDeletedLock.Unlock()
+	n.beingDeleted = true
 }
 
 func (n *node) isDeletingDependents() bool {
