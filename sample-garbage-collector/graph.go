@@ -2,8 +2,13 @@ package main
 
 import "sync"
 
+type owner struct {
+	uid string
+	val string
+}
+
 type node struct {
-	identity string
+	uid string
 	// dependents will be read by the orphan() routine, we need to protect it with a lock.
 	dependentsLock sync.RWMutex
 	// dependents are the nodes that have node.identity as a
@@ -21,7 +26,7 @@ type node struct {
 	virtualLock sync.RWMutex
 	// when processing an Update event, we need to compare the updated
 	// ownerReferences with the owners recorded in the graph.
-	owners []string
+	owners []owner
 }
 
 func (n *node) addDependent(dependent *node) {
@@ -40,6 +45,12 @@ func (n *node) markDeletingDependents() {
 	n.deletingDependentsLock.Lock()
 	defer n.deletingDependentsLock.Unlock()
 	n.deletingDependents = true
+}
+
+func (n *node) isBeingDeleted() bool {
+	n.beingDeletedLock.RLock()
+	defer n.beingDeletedLock.RUnlock()
+	return n.beingDeleted
 }
 
 // An object is on a one way trip to its final deletion if it starts being
@@ -64,7 +75,7 @@ type concurrentUIDToNode struct {
 func (m *concurrentUIDToNode) Write(node *node) {
 	m.uidToNodeLock.Lock()
 	defer m.uidToNodeLock.Unlock()
-	m.uidToNode[node.identity] = node
+	m.uidToNode[node.uid] = node
 }
 
 func (m *concurrentUIDToNode) Read(uid string) (*node, bool) {
