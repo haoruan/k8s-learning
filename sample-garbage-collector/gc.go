@@ -303,3 +303,21 @@ func (gc *GarbageCollector) isDangling(ctx context.Context, reference owner, ite
 
 	return dangling, ow, err
 }
+
+// process item that's waiting for its dependents to be deleted
+func (gc *GarbageCollector) processDeletingDependentsItem(item *node) error {
+	blockingDependents := item.blockingDependents()
+	if len(blockingDependents) == 0 {
+		fmt.Printf("remove DeleteDependents finalizer for item %s\n", item.uid)
+		item.obj.(GCObject).finalizer = NoFinalizer
+		return nil
+		// return gc.removeFinalizer(item, FinalizerDeleteDependents)
+	}
+	for _, dep := range blockingDependents {
+		if !dep.isDeletingDependents() {
+			fmt.Printf("adding %s to attemptToDelete, because its owner %s is deletingDependents", dep.uid, item.uid)
+			gc.attemptToDelete.Add(dep)
+		}
+	}
+	return nil
+}

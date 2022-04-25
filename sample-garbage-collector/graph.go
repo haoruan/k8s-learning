@@ -9,6 +9,7 @@ type owner struct {
 
 type node struct {
 	uid string
+	obj interface{}
 	// dependents will be read by the orphan() routine, we need to protect it with a lock.
 	dependentsLock sync.RWMutex
 	// dependents are the nodes that have node.identity as a
@@ -65,6 +66,30 @@ func (n *node) isDeletingDependents() bool {
 	n.deletingDependentsLock.RLock()
 	defer n.deletingDependentsLock.RUnlock()
 	return n.deletingDependents
+}
+
+// Note that this function does not provide any synchronization guarantees;
+// items could be added to or removed from ownerNode.dependents the moment this
+// function returns.
+func (n *node) getDependents() []*node {
+	n.dependentsLock.RLock()
+	defer n.dependentsLock.RUnlock()
+	var ret []*node
+	for dep := range n.dependents {
+		ret = append(ret, dep)
+	}
+	return ret
+}
+
+// blockingDependents returns the dependents that are blocking the deletion of
+// n, i.e., the dependent that has an ownerReference pointing to n, and
+// the BlockOwnerDeletion field of that ownerReference is true.
+// Note that this function does not provide any synchronization guarantees;
+// items could be added to or removed from ownerNode.dependents the moment this
+// function returns.
+func (n *node) blockingDependents() []*node {
+	dependents := n.getDependents()
+	return dependents
 }
 
 type concurrentUIDToNode struct {

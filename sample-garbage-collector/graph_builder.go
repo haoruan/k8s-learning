@@ -6,6 +6,7 @@ import (
 )
 
 const (
+	NoFinalizer               = "nofinalizer"
 	FinalizerOrphanDependents = "orphan"
 	FinalizerDeleteDependents = "foregroundDeletion"
 )
