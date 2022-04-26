@@ -18,6 +18,24 @@ const (
 	forgetItem
 )
 
+// DeletionPropagation decides if a deletion will propagate to the dependents of
+// the object, and how the garbage collector will handle the propagation.
+type DeletionPropagation string
+
+const (
+	// Orphans the dependents.
+	DeletePropagationOrphan DeletionPropagation = "Orphan"
+	// Deletes the object from the key-value store, the garbage collector will
+	// delete the dependents in the background.
+	DeletePropagationBackground DeletionPropagation = "Background"
+	// The object exists in the key-value store until the garbage collector
+	// deletes all the dependents whose ownerReference.blockOwnerDeletion=true
+	// from the key-value store.  API sever will put the "foregroundDeletion"
+	// finalizer on the object, and sets its deletionTimestamp.  This policy is
+	// cascading, i.e., the dependents will be deleted with Foreground.
+	DeletePropagationForeground DeletionPropagation = "Foreground"
+)
+
 // GarbageCollector runs reflectors to watch for changes of managed API
 // objects, funnels the results to a single-threaded dependencyGraphBuilder,
 // which builds a graph caching the dependencies among objects. Triggered by the
@@ -37,8 +55,6 @@ type GarbageCollector struct {
 	// garbage collector attempts to orphan the dependents of the items in the attemptToOrphan queue, then deletes the items.
 	attemptToOrphan        workqueue.RateLimitingInterface
 	dependencyGraphBuilder *GraphBuilder
-	// GC caches the owners that do not exist according to the API server.
-	absentOwnerCache *ReferenceCache
 
 	workerLock sync.RWMutex
 }
@@ -242,22 +258,22 @@ func (gc *GarbageCollector) attemptToDeleteItem(ctx context.Context, item *node)
 		// item doesn't have any solid owner, so it needs to be garbage
 		// collected. Also, none of item's owners is waiting for the deletion of
 		// the dependents, so set propagationPolicy based on existing finalizers.
-		var policy metav1.DeletionPropagation
+		var policy DeletionPropagation
 		switch {
-		case hasOrphanFinalizer(latest):
-			// if an existing orphan finalizer is already on the object, honor it.
-			policy = metav1.DeletePropagationOrphan
-		case hasDeleteDependentsFinalizer(latest):
+		case hasDeleteDependentsFinalizer(item):
 			// if an existing foreground finalizer is already on the object, honor it.
-			policy = metav1.DeletePropagationForeground
+			policy = DeletePropagationForeground
 		default:
 			// otherwise, default to background.
-			policy = metav1.DeletePropagationBackground
+			policy = DeletePropagationBackground
 		}
-		klog.V(2).InfoS("Deleting object", "object", klog.KRef(item.uid.Namespace, item.uid.Name),
-			"objectUID", item.uid.UID, "kind", item.uid.Kind, "propagationPolicy", policy)
+		fmt.Printf("Deleting object: objectUID: %s, kind: %s\n", item.uid, policy)
 		return gc.deleteObject(item.uid, &policy)
 	}
+}
+
+func (gc *GarbageCollector) deleteObject(item string, policy *DeletionPropagation) error {
+	return nil
 }
 
 // classify the latestReferences to three categories:
