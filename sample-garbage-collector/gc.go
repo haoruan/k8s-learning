@@ -5,10 +5,6 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
-	"k8s.io/kubernetes/staging/src/k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/kubernetes/staging/src/k8s.io/client-go/metadata"
-	"k8s.io/kubernetes/staging/src/k8s.io/client-go/util/workqueue"
 )
 
 type workQueueItemAction int
@@ -48,12 +44,9 @@ const (
 // ensures that the garbage collector operates with a graph that is at least as
 // up to date as the notification is sent.
 type GarbageCollector struct {
-	restMapper     meta.ResettableRESTMapper
-	metadataClient metadata.Interface
 	// garbage collector attempts to delete the items in attemptToDelete queue when the time is ripe.
-	attemptToDelete workqueue.RateLimitingInterface
+	attemptToDelete Queue
 	// garbage collector attempts to orphan the dependents of the items in the attemptToOrphan queue, then deletes the items.
-	attemptToOrphan        workqueue.RateLimitingInterface
 	dependencyGraphBuilder *GraphBuilder
 
 	workerLock sync.RWMutex
@@ -62,7 +55,6 @@ type GarbageCollector struct {
 // Run starts garbage collector workers.
 func (gc *GarbageCollector) Run(ctx context.Context, workers int) {
 	defer gc.attemptToDelete.ShutDown()
-	defer gc.attemptToOrphan.ShutDown()
 	defer gc.dependencyGraphBuilder.graphChanges.ShutDown()
 
 	fmt.Printf("Starting garbage collector controller\n")
@@ -102,15 +94,15 @@ func (gc *GarbageCollector) processAttemptToDeleteWorker(ctx context.Context) bo
 	if quit {
 		return false
 	}
-	defer gc.attemptToDelete.Done(item)
+	//defer gc.attemptToDelete.Done(item)
 
-	action := gc.attemptToDeleteWorker(ctx, item)
-	switch action {
-	case forgetItem:
-		gc.attemptToDelete.Forget(item)
-	case requeueItem:
-		gc.attemptToDelete.Add(item)
-	}
+	gc.attemptToDeleteWorker(ctx, item)
+	// switch action {
+	// case forgetItem:
+	// 	gc.attemptToDelete.Forget(item)
+	// case requeueItem:
+	// 	gc.attemptToDelete.Add(item)
+	// }
 
 	return true
 }
@@ -210,22 +202,23 @@ func (gc *GarbageCollector) attemptToDeleteItem(ctx context.Context, item *node)
 	switch {
 	case len(solid) != 0:
 		fmt.Printf("object %#v has at least one existing owner: %#v, will not garbage collect\n", item.uid, solid)
-		if len(dangling) == 0 && len(waitingForDependentsDeletion) == 0 {
-			return nil
-		}
-		fmt.Printf("remove dangling references %#v and waiting references %#v for object %s", dangling, waitingForDependentsDeletion, item.uid)
-		// waitingForDependentsDeletion needs to be deleted from the
-		// ownerReferences, otherwise the referenced objects will be stuck with
-		// the FinalizerDeletingDependents and never get deleted.
-		ownerUIDs := append(ownerRefsToUIDs(dangling), ownerRefsToUIDs(waitingForDependentsDeletion)...)
-		p, err := c.GenerateDeleteOwnerRefStrategicMergeBytes(item.uid.UID, ownerUIDs)
-		if err != nil {
-			return err
-		}
-		_, err = gc.patch(item, p, func(n *node) ([]byte, error) {
-			return gc.deleteOwnerRefJSONMergePatch(n, ownerUIDs...)
-		})
-		return err
+		return nil
+		//if len(dangling) == 0 && len(waitingForDependentsDeletion) == 0 {
+		//	return nil
+		//}
+		//fmt.Printf("remove dangling references %#v and waiting references %#v for object %s", dangling, waitingForDependentsDeletion, item.uid)
+		//// waitingForDependentsDeletion needs to be deleted from the
+		//// ownerReferences, otherwise the referenced objects will be stuck with
+		//// the FinalizerDeletingDependents and never get deleted.
+		//ownerUIDs := append(ownerRefsToUIDs(dangling), ownerRefsToUIDs(waitingForDependentsDeletion)...)
+		//p, err := c.GenerateDeleteOwnerRefStrategicMergeBytes(item.uid.UID, ownerUIDs)
+		//if err != nil {
+		//	return err
+		//}
+		//_, err = gc.patch(item, p, func(n *node) ([]byte, error) {
+		//	return gc.deleteOwnerRefJSONMergePatch(n, ownerUIDs...)
+		//})
+		//return err
 	case len(waitingForDependentsDeletion) != 0 && item.dependentsLength() != 0:
 		deps := item.getDependents()
 		for _, dep := range deps {
@@ -235,25 +228,25 @@ func (gc *GarbageCollector) attemptToDeleteItem(ctx context.Context, item *node)
 				// problem.
 				// there are multiple workers run attemptToDeleteItem in
 				// parallel, the circle detection can fail in a race condition.
-				klog.V(2).Infof("processing object %s, some of its owners and its dependent [%s] have FinalizerDeletingDependents, to prevent potential cycle, its ownerReferences are going to be modified to be non-blocking, then the object is going to be deleted with Foreground", item.uid, dep.identity)
-				patch, err := item.unblockOwnerReferencesStrategicMergePatch()
-				if err != nil {
-					return err
-				}
-				if _, err := gc.patch(item, patch, gc.unblockOwnerReferencesJSONMergePatch); err != nil {
-					return err
-				}
+				fmt.Printf("processing object %s, some of its owners and its dependent [%s] have FinalizerDeletingDependents, to prevent potential cycle, its ownerReferences are going to be modified to be non-blocking, then the object is going to be deleted with Foreground\n", item.uid, dep.uid)
+				//patch, err := item.unblockOwnerReferencesStrategicMergePatch()
+				//if err != nil {
+				//	return err
+				//}
+				//if _, err := gc.patch(item, patch, gc.unblockOwnerReferencesJSONMergePatch); err != nil {
+				//	return err
+				//}
 				break
 			}
 		}
-		klog.V(2).Infof("at least one owner of object %s has FinalizerDeletingDependents, and the object itself has dependents, so it is going to be deleted in Foreground", item.uid)
+		fmt.Printf("at least one owner of object %s has FinalizerDeletingDependents, and the object itself has dependents, so it is going to be deleted in Foreground\n", item.uid)
 		// the deletion event will be observed by the graphBuilder, so the item
 		// will be processed again in processDeletingDependentsItem. If it
 		// doesn't have dependents, the function will remove the
 		// FinalizerDeletingDependents from the item, resulting in the final
 		// deletion of the item.
-		policy := metav1.DeletePropagationForeground
-		return gc.deleteObject(item.uid, &policy)
+		policy := DeletePropagationForeground
+		return gc.deleteObject(item.uid, policy)
 	default:
 		// item doesn't have any solid owner, so it needs to be garbage
 		// collected. Also, none of item's owners is waiting for the deletion of
@@ -268,11 +261,25 @@ func (gc *GarbageCollector) attemptToDeleteItem(ctx context.Context, item *node)
 			policy = DeletePropagationBackground
 		}
 		fmt.Printf("Deleting object: objectUID: %s, kind: %s\n", item.uid, policy)
-		return gc.deleteObject(item.uid, &policy)
+		return gc.deleteObject(item.uid, policy)
 	}
 }
 
-func (gc *GarbageCollector) deleteObject(item string, policy *DeletionPropagation) error {
+//func ownerRefsToUIDs(refs []owner) []string {
+//	var ret []string
+//	for _, ref := range refs {
+//		ret = append(ret, ref.uid)
+//	}
+//	return ret
+//}
+
+func (gc *GarbageCollector) deleteObject(item string, policy DeletionPropagation) error {
+	switch policy {
+	case DeletePropagationBackground:
+		fmt.Println("Background")
+	case DeletePropagationForeground:
+		fmt.Println("Foreground")
+	}
 	return nil
 }
 
@@ -325,7 +332,8 @@ func (gc *GarbageCollector) processDeletingDependentsItem(item *node) error {
 	blockingDependents := item.blockingDependents()
 	if len(blockingDependents) == 0 {
 		fmt.Printf("remove DeleteDependents finalizer for item %s\n", item.uid)
-		item.obj.(GCObject).finalizer = NoFinalizer
+		gcObj := item.obj.(GCObject)
+		gcObj.finalizer = NoFinalizer
 		return nil
 		// return gc.removeFinalizer(item, FinalizerDeleteDependents)
 	}

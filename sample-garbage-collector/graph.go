@@ -4,7 +4,7 @@ import "sync"
 
 type owner struct {
 	uid string
-	val string
+	//val string
 }
 
 type node struct {
@@ -23,8 +23,8 @@ type node struct {
 	beingDeleted     bool
 	beingDeletedLock sync.RWMutex
 	// this records if the object was constructed virtually and never observed via informer event
-	virtual     bool
-	virtualLock sync.RWMutex
+	// virtual     bool
+	// virtualLock sync.RWMutex
 	// when processing an Update event, we need to compare the updated
 	// ownerReferences with the owners recorded in the graph.
 	owners []owner
@@ -52,6 +52,12 @@ func (n *node) isBeingDeleted() bool {
 	n.beingDeletedLock.RLock()
 	defer n.beingDeletedLock.RUnlock()
 	return n.beingDeleted
+}
+
+func (n *node) dependentsLength() int {
+	n.dependentsLock.RLock()
+	defer n.dependentsLock.RUnlock()
+	return len(n.dependents)
 }
 
 // An object is on a one way trip to its final deletion if it starts being

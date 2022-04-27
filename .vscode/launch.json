@@ -17,6 +17,13 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/sample-controller"
+        },
+        {
+            "name": "Launch sample-garbage-collector",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/sample-garbage-collector"
         }
     ]
 }

@@ -46,7 +46,7 @@ type GraphBuilder struct {
 	uidToNode *concurrentUIDToNode
 	// GraphBuilder is the producer of attemptToDelete and attemptToOrphan, GC is the consumer.
 	attemptToDelete Queue
-	attemptToOrphan Queue
+	// attemptToOrphan Queue
 }
 
 type GCObject struct {
@@ -207,9 +207,7 @@ func referencesDiffs(old []owner, new []owner) (added []owner, removed []owner, 
 		}
 	}
 
-	for _, o := range old {
-		removed = append(removed, o)
-	}
+	removed = append(removed, old...)
 
 	return added, removed, changed
 }
@@ -278,8 +276,8 @@ func (gb *GraphBuilder) removeDependentFromOwners(n *node, owners []owner) {
 
 // if an blocking ownerReference points to an object gets removed, or gets set to
 // "BlockOwnerDeletion=false", add the object to the attemptToDelete queue.
-func (gb *GraphBuilder) addUnblockedOwnersToDeleteQueue(removed []owner, changed []ownerRefPair) {
-}
+//func (gb *GraphBuilder) addUnblockedOwnersToDeleteQueue(removed []owner, changed []ownerRefPair) {
+//}
 
 func (gb *GraphBuilder) processTransitions(oldObj interface{}, obj interface{}, n *node) {
 	if startsWaitingForDependentsDeleted(oldObj, obj) {
