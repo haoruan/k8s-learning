@@ -16,6 +16,14 @@ type Queue struct {
 	shuttingDown bool
 }
 
+func NewQueue() *Queue {
+	q := &Queue{
+		cond: sync.NewCond(&sync.Mutex{}),
+	}
+
+	return q
+}
+
 // Get blocks until it can return an item to be processed. If shutdown = true,
 // the caller should end their goroutine. You must call Done with item when you
 // have finished processing it.

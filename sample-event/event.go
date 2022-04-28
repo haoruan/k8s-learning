@@ -56,7 +56,6 @@ func (recorder *recorderImpl) generateEvent(eventtype EventType) {
 func NewEventBroadcaster() EventBroadcaster {
 	return &eventBroadcasterImpl{
 		Broadcaster:   NewBroadcaster(maxQueuedEvents, WaitIfChannelFull),
-		wg:            sync.WaitGroup{},
 		sleepDuration: defaultSleepDuration,
 	}
 }

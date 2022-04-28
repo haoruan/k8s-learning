@@ -5,6 +5,7 @@ import "sync"
 type owner struct {
 	uid string
 	//val string
+	BlockOwnerDeletion bool
 }
 
 type node struct {

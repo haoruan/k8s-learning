@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -50,6 +51,38 @@ type GarbageCollector struct {
 	dependencyGraphBuilder *GraphBuilder
 
 	workerLock sync.RWMutex
+}
+
+func NewGarbageCollector() (*GarbageCollector, error) {
+	gb := NewGraphBuilder()
+
+	gc := &GarbageCollector{
+		attemptToDelete:        *NewQueue(),
+		dependencyGraphBuilder: gb,
+	}
+
+	return gc, nil
+}
+
+func (gc *GarbageCollector) GenerateEvent(ctx context.Context) {
+	go func() {
+	loop:
+		for {
+			select {
+			case <-ctx.Done():
+				break loop
+			default:
+			}
+
+			event := &event{
+				eventType: eventType(rand.Intn(3)),
+				obj:       GCObject{},
+			}
+			gc.dependencyGraphBuilder.graphChanges.Add(event)
+
+			time.Sleep(time.Second)
+		}
+	}()
 }
 
 // Run starts garbage collector workers.

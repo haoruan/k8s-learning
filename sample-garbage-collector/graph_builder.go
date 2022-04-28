@@ -56,6 +56,10 @@ type GCObject struct {
 	finalizer string
 }
 
+func NewGraphBuilder() *GraphBuilder {
+	return &GraphBuilder{}
+}
+
 // Run sets the stop channel and starts monitor execution until stopCh is
 // closed. Any running monitors will be stopped before Run returns.
 func (gb *GraphBuilder) Run(stopCh <-chan struct{}) {
@@ -133,7 +137,7 @@ func (gb *GraphBuilder) processGraphChanges() bool {
 		if len(added) != 0 || len(removed) != 0 || len(changed) != 0 {
 			// check if the changed dependency graph unblock owners that are
 			// waiting for the deletion of their dependents.
-			// gb.addUnblockedOwnersToDeleteQueue(removed, changed)
+			gb.addUnblockedOwnersToDeleteQueue(removed, changed)
 			// update the node itself
 			existingNode.owners = obj.owners
 			// Add the node to its new owners' dependent lists.
@@ -276,8 +280,30 @@ func (gb *GraphBuilder) removeDependentFromOwners(n *node, owners []owner) {
 
 // if an blocking ownerReference points to an object gets removed, or gets set to
 // "BlockOwnerDeletion=false", add the object to the attemptToDelete queue.
-//func (gb *GraphBuilder) addUnblockedOwnersToDeleteQueue(removed []owner, changed []ownerRefPair) {
-//}
+func (gb *GraphBuilder) addUnblockedOwnersToDeleteQueue(removed []owner, changed []ownerRefPair) {
+	for _, ref := range removed {
+		if ref.BlockOwnerDeletion {
+			node, found := gb.uidToNode.Read(ref.uid)
+			if !found {
+				fmt.Printf("cannot find %s in uidToNode\n", ref.uid)
+				continue
+			}
+			gb.attemptToDelete.Add(node)
+		}
+	}
+	for _, c := range changed {
+		wasBlocked := c.oldRef.BlockOwnerDeletion
+		isUnblocked := !c.newRef.BlockOwnerDeletion
+		if wasBlocked && isUnblocked {
+			node, found := gb.uidToNode.Read(c.newRef.uid)
+			if !found {
+				fmt.Printf("cannot find %s in uidToNode\n", c.newRef.uid)
+				continue
+			}
+			gb.attemptToDelete.Add(node)
+		}
+	}
+}
 
 func (gb *GraphBuilder) processTransitions(oldObj interface{}, obj interface{}, n *node) {
 	if startsWaitingForDependentsDeleted(oldObj, obj) {
