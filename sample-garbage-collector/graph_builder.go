@@ -127,7 +127,9 @@ func (gb *GraphBuilder) processGraphChanges() bool {
 
 	switch {
 	case (event.eventType == addEvent || event.eventType == updateEvent) && !found:
-		newNode := &node{}
+		newNode := &node{
+			owners: event.obj.(*GCObject).owners,
+		}
 		gb.insertNode(newNode)
 		// the underlying delta_fifo may combine a creation and a deletion into
 		// one event, so we need to further process the event.

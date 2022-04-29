@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"sync"
 	"time"
 )
@@ -62,27 +61,6 @@ func NewGarbageCollector() (*GarbageCollector, error) {
 	}
 
 	return gc, nil
-}
-
-func (gc *GarbageCollector) GenerateEvent(ctx context.Context) {
-	go func() {
-	loop:
-		for {
-			select {
-			case <-ctx.Done():
-				break loop
-			default:
-			}
-
-			event := &event{
-				eventType: eventType(rand.Intn(3)),
-				obj:       GCObject{},
-			}
-			gc.dependencyGraphBuilder.graphChanges.Add(event)
-
-			time.Sleep(time.Second)
-		}
-	}()
 }
 
 // Run starts garbage collector workers.
@@ -365,7 +343,7 @@ func (gc *GarbageCollector) processDeletingDependentsItem(item *node) error {
 	blockingDependents := item.blockingDependents()
 	if len(blockingDependents) == 0 {
 		fmt.Printf("remove DeleteDependents finalizer for item %s\n", item.uid)
-		gcObj := item.obj.(GCObject)
+		gcObj := item.obj.(*GCObject)
 		gcObj.finalizer = NoFinalizer
 		return nil
 		// return gc.removeFinalizer(item, FinalizerDeleteDependents)

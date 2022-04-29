@@ -96,7 +96,15 @@ func (n *node) getDependents() []*node {
 // function returns.
 func (n *node) blockingDependents() []*node {
 	dependents := n.getDependents()
-	return dependents
+	var ret []*node
+	for _, dep := range dependents {
+		for _, owner := range dep.owners {
+			if owner.uid == n.uid && owner.BlockOwnerDeletion {
+				ret = append(ret, dep)
+			}
+		}
+	}
+	return ret
 }
 
 type concurrentUIDToNode struct {

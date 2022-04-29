@@ -31,6 +31,6 @@ func SetupSignalContext() context.Context {
 func main() {
 	ctx := SetupSignalContext()
 	gc, _ := NewGarbageCollector()
-	gc.GenerateEvent(ctx)
+	GenerateEvent(gc, ctx)
 	gc.Run(ctx, 2)
 }
