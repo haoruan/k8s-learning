@@ -45,7 +45,7 @@ const (
 // up to date as the notification is sent.
 type GarbageCollector struct {
 	// garbage collector attempts to delete the items in attemptToDelete queue when the time is ripe.
-	attemptToDelete Queue
+	attemptToDelete *Queue
 	// garbage collector attempts to orphan the dependents of the items in the attemptToOrphan queue, then deletes the items.
 	dependencyGraphBuilder *GraphBuilder
 
@@ -56,7 +56,7 @@ func NewGarbageCollector() (*GarbageCollector, error) {
 	gb := NewGraphBuilder()
 
 	gc := &GarbageCollector{
-		attemptToDelete:        *NewQueue(),
+		attemptToDelete:        gb.attemptToDelete,
 		dependencyGraphBuilder: gb,
 	}
 
@@ -257,14 +257,14 @@ func (gc *GarbageCollector) attemptToDeleteItem(ctx context.Context, item *node)
 		// FinalizerDeletingDependents from the item, resulting in the final
 		// deletion of the item.
 		policy := DeletePropagationForeground
-		return gc.deleteObject(item.uid, policy)
+		return gc.deleteObject(item, policy)
 	default:
 		// item doesn't have any solid owner, so it needs to be garbage
 		// collected. Also, none of item's owners is waiting for the deletion of
 		// the dependents, so set propagationPolicy based on existing finalizers.
 		var policy DeletionPropagation
 		switch {
-		case hasDeleteDependentsFinalizer(item):
+		case hasDeleteDependentsFinalizer(item.obj):
 			// if an existing foreground finalizer is already on the object, honor it.
 			policy = DeletePropagationForeground
 		default:
@@ -272,7 +272,7 @@ func (gc *GarbageCollector) attemptToDeleteItem(ctx context.Context, item *node)
 			policy = DeletePropagationBackground
 		}
 		fmt.Printf("Deleting object: objectUID: %s, kind: %s\n", item.uid, policy)
-		return gc.deleteObject(item.uid, policy)
+		return gc.deleteObject(item, policy)
 	}
 }
 
@@ -284,12 +284,38 @@ func (gc *GarbageCollector) attemptToDeleteItem(ctx context.Context, item *node)
 //	return ret
 //}
 
-func (gc *GarbageCollector) deleteObject(item string, policy DeletionPropagation) error {
+func (gc *GarbageCollector) deleteObject(item *node, policy DeletionPropagation) error {
 	switch policy {
 	case DeletePropagationBackground:
-		fmt.Println("Background")
+		fmt.Printf("Background deleting %s\n", item.uid)
+		item.markBeingDeleted()
+
+		event := &event{
+			eventType: deleteEvent,
+			obj: &GCObject{
+				uid:    item.uid,
+				owners: item.owners,
+			},
+		}
+
+		gc.dependencyGraphBuilder.graphChanges.Add(event)
+
 	case DeletePropagationForeground:
-		fmt.Println("Foreground")
+		fmt.Printf("Forgegroudn deleting %s\n", item.uid)
+		oldObj := *item.obj.(*GCObject)
+		item.obj = &GCObject{
+			uid:       item.uid,
+			owners:    item.owners,
+			status:    "beingDeleted",
+			finalizer: FinalizerDeleteDependents,
+		}
+
+		event := &event{
+			eventType: updateEvent,
+			oldObj:    &oldObj,
+			obj:       item.obj,
+		}
+		gc.dependencyGraphBuilder.graphChanges.Add(event)
 	}
 	return nil
 }
@@ -329,10 +355,11 @@ func hasDeleteDependentsFinalizer(accessor interface{}) bool {
 // If isDangling looks up the referenced object at the API server, it also
 // returns its latest state.
 func (gc *GarbageCollector) isDangling(ctx context.Context, reference owner, item *node) (
-	dangling bool, ow *owner, err error) {
+	dangling bool, ow interface{}, err error) {
 
-	dangling = true
-	ow = &owner{}
+	node, ok := gc.dependencyGraphBuilder.uidToNode.Read(reference.uid)
+	dangling = !ok
+	ow = node.obj
 	err = nil
 
 	return dangling, ow, err
@@ -342,15 +369,12 @@ func (gc *GarbageCollector) isDangling(ctx context.Context, reference owner, ite
 func (gc *GarbageCollector) processDeletingDependentsItem(item *node) error {
 	blockingDependents := item.blockingDependents()
 	if len(blockingDependents) == 0 {
-		fmt.Printf("remove DeleteDependents finalizer for item %s\n", item.uid)
-		gcObj := item.obj.(*GCObject)
-		gcObj.finalizer = NoFinalizer
+		gc.deleteObject(item, DeletePropagationBackground)
 		return nil
-		// return gc.removeFinalizer(item, FinalizerDeleteDependents)
 	}
 	for _, dep := range blockingDependents {
 		if !dep.isDeletingDependents() {
-			fmt.Printf("adding %s to attemptToDelete, because its owner %s is deletingDependents", dep.uid, item.uid)
+			fmt.Printf("adding %s to attemptToDelete, because its owner %s is deletingDependents\n", dep.uid, item.uid)
 			gc.attemptToDelete.Add(dep)
 		}
 	}

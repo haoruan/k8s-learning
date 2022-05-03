@@ -29,7 +29,7 @@ func add_then_delete_event(gc *GarbageCollector) {
 	gc.dependencyGraphBuilder.graphChanges.Add(addevent)
 
 	addevent = &event{
-		eventType: addEvent,
+		eventType: updateEvent,
 		obj: &GCObject{
 			uid:       "add-2",
 			status:    "beingDeleted",
@@ -51,7 +51,8 @@ func add_with_owners_event(gc *GarbageCollector) {
 	childevent := &event{
 		eventType: addEvent,
 		obj: &GCObject{
-			uid: "add-child-1",
+			uid:       "add-child-1",
+			finalizer: FinalizerDeleteDependents,
 			owners: []owner{
 				{
 					uid:                "add-parent-1",
@@ -61,11 +62,25 @@ func add_with_owners_event(gc *GarbageCollector) {
 		},
 	}
 
+	grandchildevent := &event{
+		eventType: addEvent,
+		obj: &GCObject{
+			uid: "add-grandchild-1",
+			owners: []owner{
+				{
+					uid:                "add-child-1",
+					BlockOwnerDeletion: true,
+				},
+			},
+		},
+	}
+
 	gc.dependencyGraphBuilder.graphChanges.Add(parentevent)
 	gc.dependencyGraphBuilder.graphChanges.Add(childevent)
+	gc.dependencyGraphBuilder.graphChanges.Add(grandchildevent)
 
 	parentevent = &event{
-		eventType: addEvent,
+		eventType: updateEvent,
 		obj: &GCObject{
 			uid:       "add-parent-1",
 			status:    "beingDeleted",
@@ -74,7 +89,6 @@ func add_with_owners_event(gc *GarbageCollector) {
 	}
 
 	gc.dependencyGraphBuilder.graphChanges.Add(parentevent)
-
 }
 
 func GenerateEvent(gc *GarbageCollector, ctx context.Context) {
@@ -89,8 +103,9 @@ func GenerateEvent(gc *GarbageCollector, ctx context.Context) {
 
 			add_and_delete_event(gc)
 			add_then_delete_event(gc)
+			add_with_owners_event(gc)
 
-			time.Sleep(time.Second)
+			time.Sleep(5 * time.Second)
 		}
 	}()
 }

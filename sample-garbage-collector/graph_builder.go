@@ -40,12 +40,12 @@ type GraphBuilder struct {
 
 	// monitors are the producer of the graphChanges queue, graphBuilder alters
 	// the in-memory graph according to the changes.
-	graphChanges Queue
+	graphChanges *Queue
 	// uidToNode doesn't require a lock to protect, because only the
 	// single-threaded GraphBuilder.processGraphChanges() reads/writes it.
 	uidToNode *concurrentUIDToNode
 	// GraphBuilder is the producer of attemptToDelete and attemptToOrphan, GC is the consumer.
-	attemptToDelete Queue
+	attemptToDelete *Queue
 	// attemptToOrphan Queue
 }
 
@@ -57,7 +57,11 @@ type GCObject struct {
 }
 
 func NewGraphBuilder() *GraphBuilder {
-	return &GraphBuilder{}
+	return &GraphBuilder{
+		graphChanges:    NewQueue(),
+		uidToNode:       NewConcurrentUIDToNode(),
+		attemptToDelete: NewQueue(),
+	}
 }
 
 // Run sets the stop channel and starts monitor execution until stopCh is
@@ -94,6 +98,8 @@ func (gb *GraphBuilder) processGraphChanges() bool {
 	event := item.(*event)
 	obj := event.obj.(*GCObject)
 
+	fmt.Printf("GraphBuilder process object: uid %s, event type %v\n", obj.uid, event.eventType)
+
 	existingNode, found := gb.uidToNode.Read(obj.uid)
 	// if found && !existingNode.isObserved() {
 	// 	// this marks the node as having been observed via an informer event
@@ -128,7 +134,10 @@ func (gb *GraphBuilder) processGraphChanges() bool {
 	switch {
 	case (event.eventType == addEvent || event.eventType == updateEvent) && !found:
 		newNode := &node{
-			owners: event.obj.(*GCObject).owners,
+			uid:        event.obj.(*GCObject).uid,
+			obj:        event.obj,
+			owners:     event.obj.(*GCObject).owners,
+			dependents: make(map[*node]struct{}),
 		}
 		gb.insertNode(newNode)
 		// the underlying delta_fifo may combine a creation and a deletion into
@@ -136,6 +145,7 @@ func (gb *GraphBuilder) processGraphChanges() bool {
 		gb.processTransitions(event.oldObj, event.obj, newNode)
 	case (event.eventType == addEvent || event.eventType == updateEvent) && found:
 		added, removed, changed := referencesDiffs(existingNode.owners, obj.owners)
+		existingNode.obj = obj
 		if len(added) != 0 || len(removed) != 0 || len(changed) != 0 {
 			// check if the changed dependency graph unblock owners that are
 			// waiting for the deletion of their dependents.
@@ -149,7 +159,8 @@ func (gb *GraphBuilder) processGraphChanges() bool {
 			gb.removeDependentFromOwners(existingNode, removed)
 		}
 
-		if beingDeleted(event.obj) {
+		if beingDeleted(obj) {
+			fmt.Printf("%s mark being deleted\n", obj.uid)
 			existingNode.markBeingDeleted()
 		}
 		gb.processTransitions(event.oldObj, event.obj, existingNode)
@@ -159,6 +170,7 @@ func (gb *GraphBuilder) processGraphChanges() bool {
 			return true
 		}
 
+		fmt.Printf("Remove node %s from graph\n", existingNode.uid)
 		// removeNode updates the graph
 		gb.removeNode(existingNode)
 		existingNode.dependentsLock.RLock()
@@ -213,7 +225,9 @@ func referencesDiffs(old []owner, new []owner) (added []owner, removed []owner, 
 		}
 	}
 
-	removed = append(removed, old...)
+	for _, o := range oldMap {
+		removed = append(removed, o)
+	}
 
 	return added, removed, changed
 }

@@ -112,6 +112,12 @@ type concurrentUIDToNode struct {
 	uidToNode     map[string]*node
 }
 
+func NewConcurrentUIDToNode() *concurrentUIDToNode {
+	return &concurrentUIDToNode{
+		uidToNode: make(map[string]*node),
+	}
+}
+
 func (m *concurrentUIDToNode) Write(node *node) {
 	m.uidToNodeLock.Lock()
 	defer m.uidToNodeLock.Unlock()

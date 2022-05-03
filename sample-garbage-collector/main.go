@@ -32,5 +32,5 @@ func main() {
 	ctx := SetupSignalContext()
 	gc, _ := NewGarbageCollector()
 	GenerateEvent(gc, ctx)
-	gc.Run(ctx, 2)
+	gc.Run(ctx, 1)
 }
