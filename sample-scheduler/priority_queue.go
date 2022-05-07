@@ -5,12 +5,6 @@ import (
 	"sync"
 )
 
-type PodInfo struct {
-	name string
-	t    int
-	idx  int
-}
-
 type PriorityQueue struct {
 	lock  sync.Mutex
 	items []*PodInfo
