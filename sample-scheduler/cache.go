@@ -2,8 +2,6 @@ package main
 
 import (
 	"sync"
-
-	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 type imageState struct {
@@ -65,7 +63,7 @@ func (cache *cacheImpl) moveNodeInfoToHead(name string) {
 // addNodeImageStates adds states of the images on given node to the given nodeInfo and update the imageStates in
 // scheduler cache. This function assumes the lock to scheduler cache has been acquired.
 func (cache *cacheImpl) addNodeImageStates(node *Node, nodeInfo *NodeInfo) {
-	newSum := make(map[string]*framework.ImageStateSummary)
+	// newSum := make(map[string]*framework.ImageStateSummary)
 
 	for _, image := range node.images {
 		// update the entry in imageStates
@@ -79,11 +77,11 @@ func (cache *cacheImpl) addNodeImageStates(node *Node, nodeInfo *NodeInfo) {
 			state.nodes[node.name] = struct{}{}
 		}
 		// create the imageStateSummary for this image
-		if _, ok := newSum[image]; !ok {
-			newSum[image] = cache.createImageStateSummary(state)
-		}
+		// if _, ok := newSum[image]; !ok {
+		// 	newSum[image] = cache.createImageStateSummary(state)
+		// }
 	}
-	nodeInfo.ImageStates = newSum
+	// nodeInfo.ImageStates = newSum
 }
 
 // removeNodeImageStates removes the given node record from image entries having the node

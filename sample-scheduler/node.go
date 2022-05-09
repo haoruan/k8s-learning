@@ -5,6 +5,7 @@ import v1 "k8s.io/kubernetes/staging/src/k8s.io/api/core/v1"
 type Node struct {
 	name   string
 	images []string
+	zone   string
 }
 
 type NodeInfo struct {
