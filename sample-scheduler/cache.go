@@ -1,10 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"sync"
+
+	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 type imageState struct {
+	size int64
 	// A set of node names for nodes having this image present
 	nodes map[string]struct{}
 }
@@ -15,6 +19,7 @@ type cacheImpl struct {
 	m           sync.RWMutex
 	imageStates map[string]*imageState
 	headNode    *nodeInfoListItem
+	nodeTree    *nodeTree
 }
 
 func (cache *cacheImpl) AddNode(node *Node) *NodeInfo {
@@ -63,25 +68,28 @@ func (cache *cacheImpl) moveNodeInfoToHead(name string) {
 // addNodeImageStates adds states of the images on given node to the given nodeInfo and update the imageStates in
 // scheduler cache. This function assumes the lock to scheduler cache has been acquired.
 func (cache *cacheImpl) addNodeImageStates(node *Node, nodeInfo *NodeInfo) {
-	// newSum := make(map[string]*framework.ImageStateSummary)
+	newSum := make(map[string]*ImageStateSummary)
 
 	for _, image := range node.images {
 		// update the entry in imageStates
-		state, ok := cache.imageStates[image]
+		state, ok := cache.imageStates[image.Name]
 		if !ok {
 			state = &imageState{
 				nodes: map[string]struct{}{node.name: struct{}{}},
 			}
-			cache.imageStates[image] = state
+			cache.imageStates[image.Name] = state
 		} else {
 			state.nodes[node.name] = struct{}{}
 		}
 		// create the imageStateSummary for this image
-		// if _, ok := newSum[image]; !ok {
-		// 	newSum[image] = cache.createImageStateSummary(state)
-		// }
+		if _, ok := newSum[image.Name]; !ok {
+			newSum[image.Name] = &ImageStateSummary{
+				Size:     state.size,
+				NumNodes: len(state.nodes),
+			}
+		}
 	}
-	// nodeInfo.ImageStates = newSum
+	nodeInfo.ImageStates = newSum
 }
 
 // removeNodeImageStates removes the given node record from image entries having the node
@@ -93,15 +101,102 @@ func (cache *cacheImpl) removeNodeImageStates(node *Node) {
 	}
 
 	for _, image := range node.images {
-		state, ok := cache.imageStates[image]
+		state, ok := cache.imageStates[image.Name]
 		if ok {
 			delete(state.nodes, node.name)
 			if len(state.nodes) == 0 {
 				// Remove the unused image to make sure the length of
 				// imageStates represents the total number of different
 				// images on all nodes
-				delete(cache.imageStates, image)
+				delete(cache.imageStates, image.Name)
 			}
 		}
 	}
+}
+
+// UpdateSnapshot takes a snapshot of cached NodeInfo map. This is called at
+// beginning of every scheduling cycle.
+// The snapshot only includes Nodes that are not deleted at the time this function is called.
+// nodeinfo.Node() is guaranteed to be not nil for all the nodes in the snapshot.
+// This function tracks generation number of NodeInfo and updates only the
+// entries of an existing snapshot that have changed after the snapshot was taken.
+func (cache *cacheImpl) UpdateSnapshot(nodeSnapshot *Snapshot) error {
+	cache.m.Lock()
+	defer cache.m.Unlock()
+
+	// Get the last generation of the snapshot.
+	snapshotGeneration := nodeSnapshot.generation
+
+	// NodeInfoList and HavePodsWithAffinityNodeInfoList must be re-created if a node was added
+	// or removed from the cache.
+	updateAllLists := false
+	// HavePodsWithAffinityNodeInfoList must be re-created if a node changed its
+	// status from having pods with affinity to NOT having pods with affinity or the other
+	// way around.
+	updateNodesHavePodsWithAffinity := false
+	// HavePodsWithRequiredAntiAffinityNodeInfoList must be re-created if a node changed its
+	// status from having pods with required anti-affinity to NOT having pods with required
+	// anti-affinity or the other way around.
+	updateNodesHavePodsWithRequiredAntiAffinity := false
+
+	// Start from the head of the NodeInfo doubly linked list and update snapshot
+	// of NodeInfos updated after the last snapshot.
+	for node := cache.headNode; node != nil; node = node.next {
+		if node.info.Generation <= snapshotGeneration {
+			// all the nodes are updated before the existing snapshot. We are done.
+			break
+		}
+		if np := node.info.Node(); np != nil {
+			existing, ok := nodeSnapshot.nodeInfoMap[np.Name]
+			if !ok {
+				updateAllLists = true
+				existing = &framework.NodeInfo{}
+				nodeSnapshot.nodeInfoMap[np.Name] = existing
+			}
+			clone := node.info.Clone()
+			// We track nodes that have pods with affinity, here we check if this node changed its
+			// status from having pods with affinity to NOT having pods with affinity or the other
+			// way around.
+			if (len(existing.PodsWithAffinity) > 0) != (len(clone.PodsWithAffinity) > 0) {
+				updateNodesHavePodsWithAffinity = true
+			}
+			if (len(existing.PodsWithRequiredAntiAffinity) > 0) != (len(clone.PodsWithRequiredAntiAffinity) > 0) {
+				updateNodesHavePodsWithRequiredAntiAffinity = true
+			}
+			// We need to preserve the original pointer of the NodeInfo struct since it
+			// is used in the NodeInfoList, which we may not update.
+			*existing = *clone
+		}
+	}
+	// Update the snapshot generation with the latest NodeInfo generation.
+	if cache.headNode != nil {
+		nodeSnapshot.generation = cache.headNode.info.Generation
+	}
+
+	// Comparing to pods in nodeTree.
+	// Deleted nodes get removed from the tree, but they might remain in the nodes map
+	// if they still have non-deleted Pods.
+	if len(nodeSnapshot.nodeInfoMap) > cache.nodeTree.numNodes {
+		cache.removeDeletedNodesFromSnapshot(nodeSnapshot)
+		updateAllLists = true
+	}
+
+	if updateAllLists || updateNodesHavePodsWithAffinity || updateNodesHavePodsWithRequiredAntiAffinity {
+		cache.updateNodeInfoSnapshotList(nodeSnapshot, updateAllLists)
+	}
+
+	if len(nodeSnapshot.nodeInfoList) != cache.nodeTree.numNodes {
+		errMsg := fmt.Sprintf("snapshot state is not consistent, length of NodeInfoList=%v not equal to length of nodes in tree=%v "+
+			", length of NodeInfoMap=%v, length of nodes in cache=%v"+
+			", trying to recover",
+			len(nodeSnapshot.nodeInfoList), cache.nodeTree.numNodes,
+			len(nodeSnapshot.nodeInfoMap), len(cache.nodes))
+		klog.ErrorS(nil, errMsg)
+		// We will try to recover by re-creating the lists for the next scheduling cycle, but still return an
+		// error to surface the problem, the error will likely cause a failure to the current scheduling cycle.
+		cache.updateNodeInfoSnapshotList(nodeSnapshot, true)
+		return fmt.Errorf(errMsg)
+	}
+
+	return nil
 }

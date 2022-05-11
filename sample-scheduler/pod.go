@@ -1,6 +1,7 @@
 package main
 
 type Pod struct {
+	nodeName string
 }
 
 type PodInfo struct {
