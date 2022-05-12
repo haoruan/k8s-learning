@@ -82,3 +82,8 @@ func getNodeImageStates(node *Node, imageExistenceMap map[string]map[string]stru
 	}
 	return imageStates
 }
+
+// NumNodes returns the number of nodes in the snapshot.
+func (s *Snapshot) NumNodes() int {
+	return len(s.nodeInfoList)
+}

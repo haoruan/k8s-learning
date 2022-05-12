@@ -30,6 +30,8 @@ type NodeInfo struct {
 
 	// The subset of pods with affinity.
 	PodsWithAffinity []*PodInfo
+
+	Generation int64
 }
 
 type nodeInfoListItem struct {

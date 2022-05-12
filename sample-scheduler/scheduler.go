@@ -3,7 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+
+	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
+
+// ErrNoNodesAvailable is used to describe the error that no nodes available to schedule pods.
+var ErrNoNodesAvailable = fmt.Errorf("no nodes available to schedule pods")
 
 // ScheduleResult represents the result of scheduling a pod.
 type ScheduleResult struct {
@@ -17,8 +22,10 @@ type ScheduleResult struct {
 }
 
 type Scheduler struct {
-	NextPod  func() *PodInfo
-	Profiles map[string]Framework
+	Cache            *cacheImpl
+	nodeInfoSnapshot *Snapshot
+	NextPod          func() *PodInfo
+	Profiles         map[string]Framework
 }
 
 func NewScheduler() *Scheduler {
@@ -72,4 +79,49 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 // If it succeeds, it will return the name of the node.
 // If it fails, it will return a FitError with reasons.
 func (sched *Scheduler) schedulePod(ctx context.Context, fwk Framework, pod *PodInfo) (result ScheduleResult, err error) {
+	if err := sched.Cache.UpdateSnapshot(sched.nodeInfoSnapshot); err != nil {
+		return result, err
+	}
+	fmt.Printf("Snapshotting scheduler cache and node infos done\n")
+
+	if sched.nodeInfoSnapshot.NumNodes() == 0 {
+		return result, ErrNoNodesAvailable
+	}
+
+	feasibleNodes, diagnosis, err := sched.findNodesThatFitPod(ctx, fwk, state, pod)
+	if err != nil {
+		return result, err
+	}
+	fmt.Printf("Computing predicates done\n")
+
+	if len(feasibleNodes) == 0 {
+		return result, &framework.FitError{
+			Pod:         pod,
+			NumAllNodes: sched.nodeInfoSnapshot.NumNodes(),
+			Diagnosis:   diagnosis,
+		}
+	}
+
+	// When only one node after predicate, just use it.
+	if len(feasibleNodes) == 1 {
+		return ScheduleResult{
+			SuggestedHost:  feasibleNodes[0].Name,
+			EvaluatedNodes: 1 + len(diagnosis.NodeToStatusMap),
+			FeasibleNodes:  1,
+		}, nil
+	}
+
+	priorityList, err := prioritizeNodes(ctx, sched.Extenders, fwk, state, pod, feasibleNodes)
+	if err != nil {
+		return result, err
+	}
+
+	host, err := selectHost(priorityList)
+	fmt.Printf("Prioritizing done")
+
+	return ScheduleResult{
+		SuggestedHost:  host,
+		EvaluatedNodes: len(feasibleNodes) + len(diagnosis.NodeToStatusMap),
+		FeasibleNodes:  len(feasibleNodes),
+	}, err
 }

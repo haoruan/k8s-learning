@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	"sync"
-
-	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 type imageState struct {
@@ -146,23 +144,14 @@ func (cache *cacheImpl) UpdateSnapshot(nodeSnapshot *Snapshot) error {
 			// all the nodes are updated before the existing snapshot. We are done.
 			break
 		}
-		if np := node.info.Node(); np != nil {
-			existing, ok := nodeSnapshot.nodeInfoMap[np.Name]
+		if np := node.info.node; np != nil {
+			existing, ok := nodeSnapshot.nodeInfoMap[np.name]
 			if !ok {
 				updateAllLists = true
-				existing = &framework.NodeInfo{}
-				nodeSnapshot.nodeInfoMap[np.Name] = existing
+				existing = &NodeInfo{}
+				nodeSnapshot.nodeInfoMap[np.name] = existing
 			}
-			clone := node.info.Clone()
-			// We track nodes that have pods with affinity, here we check if this node changed its
-			// status from having pods with affinity to NOT having pods with affinity or the other
-			// way around.
-			if (len(existing.PodsWithAffinity) > 0) != (len(clone.PodsWithAffinity) > 0) {
-				updateNodesHavePodsWithAffinity = true
-			}
-			if (len(existing.PodsWithRequiredAntiAffinity) > 0) != (len(clone.PodsWithRequiredAntiAffinity) > 0) {
-				updateNodesHavePodsWithRequiredAntiAffinity = true
-			}
+			clone := node.info
 			// We need to preserve the original pointer of the NodeInfo struct since it
 			// is used in the NodeInfoList, which we may not update.
 			*existing = *clone
@@ -191,7 +180,7 @@ func (cache *cacheImpl) UpdateSnapshot(nodeSnapshot *Snapshot) error {
 			", trying to recover",
 			len(nodeSnapshot.nodeInfoList), cache.nodeTree.numNodes,
 			len(nodeSnapshot.nodeInfoMap), len(cache.nodes))
-		klog.ErrorS(nil, errMsg)
+		fmt.Printf("%s\n", errMsg)
 		// We will try to recover by re-creating the lists for the next scheduling cycle, but still return an
 		// error to surface the problem, the error will likely cause a failure to the current scheduling cycle.
 		cache.updateNodeInfoSnapshotList(nodeSnapshot, true)
@@ -199,4 +188,33 @@ func (cache *cacheImpl) UpdateSnapshot(nodeSnapshot *Snapshot) error {
 	}
 
 	return nil
+}
+
+// If certain nodes were deleted after the last snapshot was taken, we should remove them from the snapshot.
+func (cache *cacheImpl) removeDeletedNodesFromSnapshot(snapshot *Snapshot) {
+	toDelete := len(snapshot.nodeInfoMap) - cache.nodeTree.numNodes
+	for name := range snapshot.nodeInfoMap {
+		if toDelete <= 0 {
+			break
+		}
+		if n, ok := cache.nodes[name]; !ok || n.info.node == nil {
+			delete(snapshot.nodeInfoMap, name)
+			toDelete--
+		}
+	}
+}
+
+func (cache *cacheImpl) updateNodeInfoSnapshotList(snapshot *Snapshot, updateAll bool) {
+	if updateAll {
+		// Take a snapshot of the nodes order in the tree
+		snapshot.nodeInfoList = make([]*NodeInfo, 0, cache.nodeTree.numNodes)
+		nodesList, _ := cache.nodeTree.list()
+		for _, nodeName := range nodesList {
+			if nodeInfo := snapshot.nodeInfoMap[nodeName]; nodeInfo != nil {
+				snapshot.nodeInfoList = append(snapshot.nodeInfoList, nodeInfo)
+			} else {
+				fmt.Printf("Node exists in nodeTree but not in NodeInfoMap, this should not happen, node %s\n", nodeName)
+			}
+		}
+	}
 }
