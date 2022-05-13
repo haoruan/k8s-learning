@@ -1,5 +1,7 @@
 package main
 
+import "fmt"
+
 // Snapshot is a snapshot of cache NodeInfo and NodeTree order. The scheduler takes a
 // snapshot at the beginning of each scheduling cycle and uses it for its operations in that cycle.
 type Snapshot struct {
@@ -86,4 +88,17 @@ func getNodeImageStates(node *Node, imageExistenceMap map[string]map[string]stru
 // NumNodes returns the number of nodes in the snapshot.
 func (s *Snapshot) NumNodes() int {
 	return len(s.nodeInfoList)
+}
+
+// List returns the list of nodes in the snapshot.
+func (s *Snapshot) List() ([]*NodeInfo, error) {
+	return s.nodeInfoList, nil
+}
+
+// Get returns the NodeInfo of the given node name.
+func (s *Snapshot) Get(nodeName string) (*NodeInfo, error) {
+	if v, ok := s.nodeInfoMap[nodeName]; ok && v != nil {
+		return v, nil
+	}
+	return nil, fmt.Errorf("nodeinfo not found for node name %q", nodeName)
 }

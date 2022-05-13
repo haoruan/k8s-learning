@@ -1,6 +1,7 @@
 package main
 
 type Pod struct {
+	name     string
 	nodeName string
 }
 
