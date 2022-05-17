@@ -14,7 +14,12 @@ type imageState struct {
 type cacheImpl struct {
 	nodes map[string]*nodeInfoListItem
 	// This mutex guards all fields within this cache struct.
-	m           sync.RWMutex
+	m sync.RWMutex
+	// a map from pod key to podState.
+	// a set of assumed pod keys.
+	// The key could further be used to get an entry in podStates.
+	assumedPods map[string]struct{}
+	podStates   map[string]*podState
 	imageStates map[string]*imageState
 	headNode    *nodeInfoListItem
 	nodeTree    *nodeTree
@@ -217,4 +222,38 @@ func (cache *cacheImpl) updateNodeInfoSnapshotList(snapshot *Snapshot, updateAll
 			}
 		}
 	}
+}
+
+func (cache *cacheImpl) AssumePod(pod *Pod) error {
+	key := pod.uid
+
+	cache.m.Lock()
+	defer cache.m.Unlock()
+	if _, ok := cache.podStates[key]; ok {
+		return fmt.Errorf("pod %v is in the cache, so can't be assumed", key)
+	}
+
+	return cache.addPod(pod, true)
+}
+
+// Assumes that lock is already acquired.
+func (cache *cacheImpl) addPod(pod *Pod, assumePod bool) error {
+	key := pod.uid
+	n, ok := cache.nodes[pod.nodeName]
+	if !ok {
+		n = &nodeInfoListItem{
+			info: NewNodeInfo(),
+		}
+		cache.nodes[pod.nodeName] = n
+	}
+	n.info.AddPod(pod)
+	cache.moveNodeInfoToHead(pod.nodeName)
+	ps := &podState{
+		pod: pod,
+	}
+	cache.podStates[key] = ps
+	if assumePod {
+		cache.assumedPods[key] = struct{}{}
+	}
+	return nil
 }

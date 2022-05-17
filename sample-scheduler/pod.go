@@ -1,15 +1,27 @@
 package main
 
+import "time"
+
 type Pod struct {
+	uid      string
 	name     string
 	nodeName string
 }
 
 type PodInfo struct {
+	pod           *Pod
 	name          string
 	schedulerName string
 	t             int
 	idx           int
+}
+
+type podState struct {
+	pod *Pod
+	// Used by assumedPod to determinate expiration.
+	deadline *time.Time
+	// Used to block cache from expiring assumedPod if binding still runs
+	bindingFinished bool
 }
 
 // NewPodInfo returns a new PodInfo.

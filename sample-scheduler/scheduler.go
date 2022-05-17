@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand"
 )
 
 const (
@@ -67,10 +68,11 @@ func (sched *Scheduler) frameworkForPod(pod *PodInfo) Framework {
 
 func (sched *Scheduler) scheduleOne(ctx context.Context) {
 	// 1. Get the next pod for scheduling
-	pod := sched.NextPod()
+	podInfo := sched.NextPod()
+	pod := podInfo.pod
 
 	// 2. Schedule a pod with provided algorithm
-	fwk := sched.frameworkForPod(pod)
+	fwk := sched.frameworkForPod(podInfo)
 
 	fmt.Printf("Attempting to schedule pod %s\n", pod.name)
 	schedulingCycleCtx, cancel := context.WithCancel(ctx)
@@ -82,13 +84,46 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 	//    to nominate a node where the pods can run.
 	//    If preemption was successful, let the current pod be aware of the nominated node.
 	//    Handle the error, get the next pod and start over.
+	if err != nil {
+		fmt.Printf("%s\n", err)
+		return
+	}
+
 	// 4. If the scheduling algorithm finds a suitable node,
 	//    store the pod into the scheduler cache (AssumePod operation)
 	//    and run plugins from the Reserve and Permit extension point in that order.
 	//    In case any of the plugins fails, end the current scheduling cycle,
 	//    increase relevant metrics and handle the scheduling error through the Error handler.
+
+	// Tell the cache to assume that a pod now is running on a given node, even though it hasn't been bound yet.
+	// This allows us to keep scheduling without waiting on binding to occur.
+	assumedPodInfo := podInfo
+	assumedPod := assumedPodInfo.pod
+	// assume modifies `assumedPod` by setting NodeName=scheduleResult.SuggestedHost
+	err = sched.assume(assumedPod, scheduleResult.SuggestedHost)
+	if err != nil {
+		fmt.Printf("%s\n", err)
+		return
+	}
+
+	// Run the Reserve method of reserve plugins.
+	if err = fwk.RunReservePluginsReserve(schedulingCycleCtx, assumedPod, scheduleResult.SuggestedHost); err != nil {
+		fmt.Printf("%s\n", err)
+		return
+	}
+
+	// Run "permit" plugins.
+	if err = fwk.RunPermitPlugins(schedulingCycleCtx, assumedPod, scheduleResult.SuggestedHost); err != nil {
+		fmt.Printf("%s\n", err)
+	}
+
+	sched.SchedulingQueue.Activate(pod)
+
 	// 5.Upon successfully running all extension points, proceed to the binding cycle.
 	//   At the same time start processing another pod (if there’s any).
+	go func() {
+
+	}()
 }
 
 // schedulePod tries to schedule the given pod to one of the nodes in the node list.
@@ -124,7 +159,7 @@ func (sched *Scheduler) schedulePod(ctx context.Context, fwk Framework, pod *Pod
 		}, nil
 	}
 
-	priorityList, err := prioritizeNodes(ctx, sched.Extenders, fwk, state, pod, feasibleNodes)
+	priorityList, err := prioritizeNodes(ctx, fwk, pod, feasibleNodes)
 	if err != nil {
 		return result, err
 	}
@@ -196,6 +231,7 @@ func (sched *Scheduler) findNodesThatPassFilters(
 		return feasibleNodes, nil
 	}
 
+	return feasibleNodes, nil
 }
 
 // numFeasibleNodesToFind returns the number of feasible nodes that once found, the scheduler stops
@@ -224,4 +260,71 @@ func (sched *Scheduler) numFeasibleNodesToFind(numAllNodes int32) (numNodes int3
 
 func findNodesThatPassExtenders(pod *Pod, feasibleNodes []*Node) ([]*Node, error) {
 	return feasibleNodes, nil
+}
+
+// prioritizeNodes prioritizes the nodes by running the score plugins,
+// which return a score for each node from the call to RunScorePlugins().
+// The scores from each plugin are added together to make the score for that node, then
+// any extenders are run as well.
+// All scores are finally combined (added) to get the total weighted scores of all nodes
+func prioritizeNodes(
+	ctx context.Context,
+	fwk Framework,
+	pod *Pod,
+	nodes []*Node,
+) ([]NodeScore, error) {
+	result := make([]NodeScore, 0, len(nodes))
+	for i := range nodes {
+		result = append(result, NodeScore{
+			Name:  nodes[i].name,
+			Score: 1,
+		})
+	}
+	return result, nil
+}
+
+// selectHost takes a prioritized list of nodes and then picks one
+// in a reservoir sampling manner from the nodes that had the highest score.
+func selectHost(nodeScoreList []NodeScore) (string, error) {
+	if len(nodeScoreList) == 0 {
+		return "", fmt.Errorf("empty priorityList")
+	}
+	maxScore := nodeScoreList[0].Score
+	selected := nodeScoreList[0].Name
+	cntOfMaxScore := 1
+	for _, ns := range nodeScoreList[1:] {
+		if ns.Score > maxScore {
+			maxScore = ns.Score
+			selected = ns.Name
+			cntOfMaxScore = 1
+		} else if ns.Score == maxScore {
+			cntOfMaxScore++
+			if rand.Intn(cntOfMaxScore) == 0 {
+				// Replace the candidate with probability of 1/cntOfMaxScore
+				selected = ns.Name
+			}
+		}
+	}
+	return selected, nil
+}
+
+// assume signals to the cache that a pod is already in the cache, so that binding can be asynchronous.
+// assume modifies `assumed`.
+func (sched *Scheduler) assume(assumed *Pod, host string) error {
+	// Optimistically assume that the binding will succeed and send it to apiserver
+	// in the background.
+	// If the binding fails, scheduler will release resources allocated to assumed pod
+	// immediately.
+	assumed.nodeName = host
+
+	if err := sched.Cache.AssumePod(assumed); err != nil {
+		err := fmt.Errorf("Scheduler cache AssumePod failed")
+		return err
+	}
+	// if "assumed" is a nominated pod, we should remove it from internal cache
+	if sched.SchedulingQueue != nil {
+		sched.SchedulingQueue.DeleteNominatedPodIfExists(assumed)
+	}
+
+	return nil
 }

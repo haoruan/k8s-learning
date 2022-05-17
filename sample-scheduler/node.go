@@ -21,6 +21,12 @@ type Node struct {
 	zone   string
 }
 
+// NodeScore is a struct with node name and score.
+type NodeScore struct {
+	Name  string
+	Score int64
+}
+
 type NodeInfo struct {
 	node *Node
 	// Pods running on the node.

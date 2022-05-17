@@ -2,18 +2,18 @@ package main
 
 import (
 	"context"
-
-	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 type Framework interface {
 	RunPreFilterPlugins(ctx context.Context, pod *Pod) (*PreFilterResult, error)
+	RunReservePluginsReserve(ctx context.Context, pod *Pod, nodeName string) error
+	RunPermitPlugins(ctx context.Context, pod *Pod, nodeName string) error
 	// HasFilterPlugins returns true if at least one Filter plugin is defined.
 	HasFilterPlugins() bool
 }
 
 type frameworkImpl struct {
-	preFilterPlugins []framework.PreFilterPlugin
+	// preFilterPlugins []PreFilterPlugin
 }
 
 // PreFilterResult wraps needed info for scheduler framework to act upon PreFilter phase.
@@ -61,6 +61,14 @@ func (f *frameworkImpl) RunPreFilterPlugins(ctx context.Context, pod *Pod) (*Pre
 
 	// }
 	return result, nil
+}
+
+func (f *frameworkImpl) RunReservePluginsReserve(ctx context.Context, pod *Pod, nodeName string) error {
+	return nil
+}
+
+func (f *frameworkImpl) RunPermitPlugins(ctx context.Context, pod *Pod, nodeName string) error {
+	return nil
 }
 
 func (f *frameworkImpl) HasFilterPlugins() bool {
