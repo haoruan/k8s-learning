@@ -42,7 +42,7 @@ func (nt *nodeTree) addNode(n *Node) {
 		nt.zones = append(nt.zones, zone)
 		nt.tree[zone] = []string{n.name}
 	}
-	fmt.Printf("Added node in listed group to NodeTree:  node %s, zone %s\n", "node", n.name, zone)
+	fmt.Printf("Added node in listed group to NodeTree:  node %s, zone %s\n", n.name, zone)
 	nt.numNodes++
 }
 

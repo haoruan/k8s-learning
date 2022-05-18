@@ -27,7 +27,8 @@ func SetupSignalContext() context.Context {
 }
 
 func main() {
+	queue := &PriorityQueue{}
 	ctx := SetupSignalContext()
-	sched := NewScheduler()
+	sched := NewScheduler(queue)
 	sched.Run(ctx)
 }

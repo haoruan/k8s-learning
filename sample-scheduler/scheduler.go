@@ -10,7 +10,7 @@ const (
 	// SchedulerError is the reason recorded for events when an error occurs during scheduling a pod.
 	SchedulerError = "SchedulerError"
 	// Percentage of plugin metrics to be sampled.
-	pluginMetricsSamplePercent = 10
+	// pluginMetricsSamplePercent = 10
 	// minFeasibleNodesToFind is the minimum number of nodes that would be scored
 	// in each scheduling cycle. This is a semi-arbitrary value to ensure that a
 	// certain minimum of nodes are checked for feasibility. This in turn helps
@@ -20,7 +20,7 @@ const (
 	// would be scored in each scheduling cycle. This is a semi-arbitrary value
 	// to ensure that a certain minimum of nodes are checked for feasibility.
 	// This in turn helps ensure a minimum level of spreading.
-	minFeasibleNodesPercentageToFind = 5
+	// minFeasibleNodesPercentageToFind = 5
 )
 
 // ErrNoNodesAvailable is used to describe the error that no nodes available to schedule pods.
@@ -45,15 +45,23 @@ type Scheduler struct {
 	nextStartNodeIndex int
 }
 
-func NewScheduler() *Scheduler {
-	return &Scheduler{}
+func NewScheduler(queue *PriorityQueue) *Scheduler {
+	profiles := map[string]Framework{
+		"default-scheduler": &frameworkImpl{},
+	}
+	return &Scheduler{
+		Cache:            NewCache(),
+		nodeInfoSnapshot: NewEmptySnapshot(),
+		NextPod:          MakeNextPodFunc(queue),
+		Profiles:         profiles,
+	}
 }
 
 func MakeNextPodFunc(queue *PriorityQueue) func() *PodInfo {
 	return func() *PodInfo {
-		pod := queue.Get()
-		fmt.Printf("About to try and schedule pod %s\n", pod.name)
-		return pod
+		podInfo := queue.Get()
+		fmt.Printf("About to try and schedule pod %s\n", podInfo.pod.name)
+		return podInfo
 	}
 }
 
@@ -117,7 +125,7 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 		fmt.Printf("%s\n", err)
 	}
 
-	sched.SchedulingQueue.Activate(pod)
+	// sched.SchedulingQueue.Activate(pod)
 
 	// 5.Upon successfully running all extension points, proceed to the binding cycle.
 	//   At the same time start processing another pod (if there’s any).
@@ -147,7 +155,7 @@ func (sched *Scheduler) schedulePod(ctx context.Context, fwk Framework, pod *Pod
 	numAllNodes := sched.nodeInfoSnapshot.NumNodes()
 
 	if len(feasibleNodes) == 0 {
-		return result, fmt.Errorf("FeasibleNodes not found for pod %s, numallnodes %d\n", pod.name, numAllNodes)
+		return result, fmt.Errorf("FeasibleNodes not found for pod %s, numallnodes %d", pod.name, numAllNodes)
 	}
 
 	// When only one node after predicate, just use it.
@@ -179,7 +187,7 @@ func (sched *Scheduler) schedulePod(ctx context.Context, fwk Framework, pod *Pod
 func (sched *Scheduler) findNodesThatFitPod(ctx context.Context, fwk Framework, pod *Pod) ([]*Node, error) {
 	// Run "prefilter" plugins.
 	preRes, s := fwk.RunPreFilterPlugins(ctx, pod)
-	allNodes, err := sched.nodeInfoSnapshot.List()
+	allNodes, _ := sched.nodeInfoSnapshot.List()
 
 	if s != nil {
 		return nil, s
@@ -322,9 +330,9 @@ func (sched *Scheduler) assume(assumed *Pod, host string) error {
 		return err
 	}
 	// if "assumed" is a nominated pod, we should remove it from internal cache
-	if sched.SchedulingQueue != nil {
-		sched.SchedulingQueue.DeleteNominatedPodIfExists(assumed)
-	}
+	//if sched.SchedulingQueue != nil {
+	//	sched.SchedulingQueue.DeleteNominatedPodIfExists(assumed)
+	//}
 
 	return nil
 }

@@ -1,7 +1,5 @@
 package main
 
-import "time"
-
 type Pod struct {
 	uid      string
 	name     string
@@ -10,7 +8,6 @@ type Pod struct {
 
 type PodInfo struct {
 	pod           *Pod
-	name          string
 	schedulerName string
 	t             int
 	idx           int
@@ -19,9 +16,9 @@ type PodInfo struct {
 type podState struct {
 	pod *Pod
 	// Used by assumedPod to determinate expiration.
-	deadline *time.Time
+	// deadline *time.Time
 	// Used to block cache from expiring assumedPod if binding still runs
-	bindingFinished bool
+	// bindingFinished bool
 }
 
 // NewPodInfo returns a new PodInfo.

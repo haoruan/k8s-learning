@@ -25,6 +25,15 @@ type cacheImpl struct {
 	nodeTree    *nodeTree
 }
 
+func NewCache() *cacheImpl {
+	return &cacheImpl{
+		nodes:       make(map[string]*nodeInfoListItem),
+		nodeTree:    newNodeTree(nil),
+		podStates:   make(map[string]*podState),
+		imageStates: make(map[string]*imageState),
+	}
+}
+
 func (cache *cacheImpl) AddNode(node *Node) *NodeInfo {
 	cache.m.Lock()
 	defer cache.m.Unlock()
@@ -44,11 +53,62 @@ func (cache *cacheImpl) AddNode(node *Node) *NodeInfo {
 	return n.info
 }
 
+func (cache *cacheImpl) UpdateNode(oldNode, newNode *Node) *NodeInfo {
+	cache.m.Lock()
+	defer cache.m.Unlock()
+
+	n, ok := cache.nodes[newNode.name]
+	if !ok {
+		n = NewNodeInfoListItem(NewNodeInfo())
+		cache.nodes[newNode.name] = n
+		cache.nodeTree.addNode(newNode)
+	} else {
+		cache.removeNodeImageStates(n.info.node)
+	}
+	cache.moveNodeInfoToHead(newNode.name)
+
+	cache.nodeTree.updateNode(oldNode, newNode)
+	cache.addNodeImageStates(newNode, n.info)
+	n.info.node = newNode
+	return n.info
+}
+
+// RemoveNode removes a node from the cache's tree.
+// The node might still have pods because their deletion events didn't arrive
+// yet. Those pods are considered removed from the cache, being the node tree
+// the source of truth.
+// However, we keep a ghost node with the list of pods until all pod deletion
+// events have arrived. A ghost node is skipped from snapshots.
+func (cache *cacheImpl) RemoveNode(node *Node) error {
+	cache.m.Lock()
+	defer cache.m.Unlock()
+
+	n, ok := cache.nodes[node.name]
+	if !ok {
+		return fmt.Errorf("node %v is not found", node.name)
+	}
+	// n.info.RemoveNode()
+	// We remove NodeInfo for this node only if there aren't any pods on this node.
+	// We can't do it unconditionally, because notifications about pods are delivered
+	// in a different watch, and thus can potentially be observed later, even though
+	// they happened before node removal.
+	if len(n.info.Pods) == 0 {
+		cache.removeNodeInfoFromList(node.name)
+	} else {
+		cache.moveNodeInfoToHead(node.name)
+	}
+	if err := cache.nodeTree.removeNode(node); err != nil {
+		return err
+	}
+	cache.removeNodeImageStates(node)
+	return nil
+}
+
 // moveNodeInfoToHead moves a NodeInfo to the head of "cache.nodes" doubly
 // linked list. The head is the most recently updated NodeInfo.
 // We assume cache lock is already acquired.
 func (cache *cacheImpl) moveNodeInfoToHead(name string) {
-	ni, _ := cache.nodes[name]
+	ni := cache.nodes[name]
 	// if the node info list item is already at the head, we are done.
 	if ni == cache.headNode {
 		return
@@ -68,6 +128,25 @@ func (cache *cacheImpl) moveNodeInfoToHead(name string) {
 	cache.headNode = ni
 }
 
+// removeNodeInfoFromList removes a NodeInfo from the "cache.nodes" doubly
+// linked list.
+// We assume cache lock is already acquired.
+func (cache *cacheImpl) removeNodeInfoFromList(name string) {
+	ni := cache.nodes[name]
+
+	if ni.prev != nil {
+		ni.prev.next = ni.next
+	}
+	if ni.next != nil {
+		ni.next.prev = ni.prev
+	}
+	// if the removed item was at the head, we must update the head.
+	if ni == cache.headNode {
+		cache.headNode = ni.next
+	}
+	delete(cache.nodes, name)
+}
+
 // addNodeImageStates adds states of the images on given node to the given nodeInfo and update the imageStates in
 // scheduler cache. This function assumes the lock to scheduler cache has been acquired.
 func (cache *cacheImpl) addNodeImageStates(node *Node, nodeInfo *NodeInfo) {
@@ -78,18 +157,16 @@ func (cache *cacheImpl) addNodeImageStates(node *Node, nodeInfo *NodeInfo) {
 		state, ok := cache.imageStates[image.Name]
 		if !ok {
 			state = &imageState{
-				nodes: map[string]struct{}{node.name: struct{}{}},
+				nodes: map[string]struct{}{node.name: {}},
 			}
 			cache.imageStates[image.Name] = state
 		} else {
 			state.nodes[node.name] = struct{}{}
 		}
 		// create the imageStateSummary for this image
-		if _, ok := newSum[image.Name]; !ok {
-			newSum[image.Name] = &ImageStateSummary{
-				Size:     state.size,
-				NumNodes: len(state.nodes),
-			}
+		newSum[image.Name] = &ImageStateSummary{
+			Size:     state.size,
+			NumNodes: len(state.nodes),
 		}
 	}
 	nodeInfo.ImageStates = newSum
@@ -156,10 +233,9 @@ func (cache *cacheImpl) UpdateSnapshot(nodeSnapshot *Snapshot) error {
 				existing = &NodeInfo{}
 				nodeSnapshot.nodeInfoMap[np.name] = existing
 			}
-			clone := node.info
 			// We need to preserve the original pointer of the NodeInfo struct since it
 			// is used in the NodeInfoList, which we may not update.
-			*existing = *clone
+			*existing = *node.info
 		}
 	}
 	// Update the snapshot generation with the latest NodeInfo generation.
@@ -240,10 +316,9 @@ func (cache *cacheImpl) AssumePod(pod *Pod) error {
 func (cache *cacheImpl) addPod(pod *Pod, assumePod bool) error {
 	key := pod.uid
 	n, ok := cache.nodes[pod.nodeName]
+	// In what case the node doesn't exist in cache.nodes ?
 	if !ok {
-		n = &nodeInfoListItem{
-			info: NewNodeInfo(),
-		}
+		n = NewNodeInfoListItem(NewNodeInfo())
 		cache.nodes[pod.nodeName] = n
 	}
 	n.info.AddPod(pod)
