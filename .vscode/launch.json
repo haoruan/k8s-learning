@@ -24,6 +24,13 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/sample-garbage-collector"
+        },
+        {
+            "name": "Launch sample-gscheduler",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/sample-scheduler"
         }
     ]
 }

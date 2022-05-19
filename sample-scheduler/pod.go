@@ -31,4 +31,5 @@ func NewPodInfo(pod *Pod) *PodInfo {
 // Update creates a full new PodInfo by default. And only updates the pod when the PodInfo
 // has been instantiated and the passed pod is the exact same one as the original pod.
 func (pi *PodInfo) Update(pod *Pod) {
+	pi.pod = pod
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -26,9 +27,48 @@ func SetupSignalContext() context.Context {
 	return ctx
 }
 
+func createNodes(n int) []*Node {
+	nodes := []*Node{}
+
+	for i := 0; i < n; i++ {
+		node := &Node{
+			fmt.Sprintf("node%d", i),
+			[]ContainerImage{},
+			fmt.Sprintf("zone%d", i),
+		}
+		nodes = append(nodes, node)
+	}
+
+	return nodes
+}
+
+func createPodInfos(n int) []*PodInfo {
+	podInfos := []*PodInfo{}
+	for i := 0; i < n; i++ {
+		pod := &Pod{
+			uid:  fmt.Sprintf("%d", i+1),
+			name: fmt.Sprintf("pod%d", i+1),
+		}
+		podInfo := NewPodInfo(pod)
+		podInfo.schedulerName = "default-scheduler"
+		podInfos = append(podInfos, podInfo)
+	}
+
+	return podInfos
+}
+
 func main() {
 	queue := &PriorityQueue{}
 	ctx := SetupSignalContext()
 	sched := NewScheduler(queue)
+
+	for _, node := range createNodes(10) {
+		sched.Cache.AddNode(node)
+	}
+
+	for _, podInfo := range createPodInfos(10) {
+		queue.Push(podInfo)
+	}
+
 	sched.Run(ctx)
 }
