@@ -52,7 +52,9 @@ type nodeInfoListItem struct {
 // If any pods are given in arguments, their information will be aggregated in
 // the returned object.
 func NewNodeInfo(pods ...*Pod) *NodeInfo {
-	ni := &NodeInfo{}
+	ni := &NodeInfo{
+		Generation: nextGeneration(),
+	}
 	for _, pod := range pods {
 		ni.AddPod(pod)
 	}

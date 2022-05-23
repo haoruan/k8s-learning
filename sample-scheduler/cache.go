@@ -31,6 +31,7 @@ func NewCache() *cacheImpl {
 		nodeTree:    newNodeTree(nil),
 		podStates:   make(map[string]*podState),
 		imageStates: make(map[string]*imageState),
+		assumedPods: make(map[string]struct{}),
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"time"
 )
 
 const (
@@ -59,15 +60,27 @@ func NewScheduler(queue *PriorityQueue) *Scheduler {
 
 func MakeNextPodFunc(queue *PriorityQueue) func() *PodInfo {
 	return func() *PodInfo {
-		podInfo := queue.Get()
-		fmt.Printf("About to try and schedule pod %s\n", podInfo.pod.name)
-		return podInfo
+		if queue.Len() > 0 {
+			podInfo := queue.Get()
+			fmt.Printf("About to try and schedule pod %s\n", podInfo.pod.name)
+			return podInfo
+		} else {
+			return nil
+		}
 	}
 }
 
 func (sched *Scheduler) Run(ctx context.Context) {
-	sched.scheduleOne(ctx)
-	<-ctx.Done()
+loop:
+	for {
+		select {
+		case <-ctx.Done():
+			break loop
+		default:
+			sched.scheduleOne(ctx)
+			time.Sleep(time.Second)
+		}
+	}
 }
 
 func (sched *Scheduler) frameworkForPod(pod *PodInfo) Framework {
@@ -77,6 +90,10 @@ func (sched *Scheduler) frameworkForPod(pod *PodInfo) Framework {
 func (sched *Scheduler) scheduleOne(ctx context.Context) {
 	// 1. Get the next pod for scheduling
 	podInfo := sched.NextPod()
+	if podInfo == nil {
+		return
+	}
+
 	pod := podInfo.pod
 
 	// 2. Schedule a pod with provided algorithm
@@ -328,6 +345,8 @@ func (sched *Scheduler) assume(assumed *Pod, host string) error {
 	if err := sched.Cache.AssumePod(assumed); err != nil {
 		err := fmt.Errorf("Scheduler cache AssumePod failed")
 		return err
+	} else {
+		fmt.Printf("pod %s is assumed on node %s\n", assumed.name, assumed.nodeName)
 	}
 	// if "assumed" is a nominated pod, we should remove it from internal cache
 	//if sched.SchedulingQueue != nil {
