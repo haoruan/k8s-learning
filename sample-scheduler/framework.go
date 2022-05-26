@@ -5,10 +5,24 @@ import (
 	"fmt"
 
 	"k8s.io/kubernetes/pkg/scheduler/framework"
-	v1 "k8s.io/kubernetes/staging/src/k8s.io/api/core/v1"
 )
 
 type Framework interface {
+	// RunFilterPlugins runs the set of configured Filter plugins for pod on
+	// the given node. Note that for the node being evaluated, the passed nodeInfo
+	// reference could be different from the one in NodeInfoSnapshot map (e.g., pods
+	// considered to be running on the node could be different). For example, during
+	// preemption, we may pass a copy of the original nodeInfo object that has some pods
+	// removed from it to evaluate the possibility of preempting them to
+	// schedule the target pod.
+	RunFilterPlugins(context.Context, *Pod, *NodeInfo) PluginToStatus
+
+	// RunPreFilterPlugins runs the set of configured PreFilter plugins. It returns
+	// *Status and its code is set to non-success if any of the plugins returns
+	// anything but Success. If a non-success status is returned, then the scheduling
+	// cycle is aborted.
+	// It also returns a PreFilterResult, which may influence what or how many nodes to
+	// evaluate downstream.
 	RunPreFilterPlugins(ctx context.Context, pod *Pod) (*PreFilterResult, error)
 	RunReservePluginsReserve(ctx context.Context, pod *Pod, nodeName string) error
 	RunPermitPlugins(ctx context.Context, pod *Pod, nodeName string) error
@@ -29,14 +43,14 @@ type PreFilterPlugin interface {
 	// plugins must return success or the pod will be rejected. PreFilter could optionally
 	// return a PreFilterResult to influence which nodes to evaluate downstream. This is useful
 	// for cases where it is possible to determine the subset of nodes to process in O(1) time.
-	PreFilter(ctx context.Context, state *CycleState, p *v1.Pod) (*PreFilterResult, *Status)
+	PreFilter(context.Context, *Pod) (*PreFilterResult, error)
 	// PreFilterExtensions returns a PreFilterExtensions interface if the plugin implements one,
 	// or nil if it does not. A Pre-filter plugin can provide extensions to incrementally
 	// modify its pre-processed info. The framework guarantees that the extensions
 	// AddPod/RemovePod will only be called after PreFilter, possibly on a cloned
 	// CycleState, and may call those functions more than once before calling
 	// Filter again on a specific node.
-	PreFilterExtensions() PreFilterExtensions
+	// PreFilterExtensions() PreFilterExtensions
 }
 
 type frameworkImpl struct {
@@ -91,6 +105,33 @@ func (p *PreFilterResult) AllNodes() bool {
 	return p == nil || p.NodeNames == nil
 }
 
+// RunFilterPlugins runs the set of configured Filter plugins for pod on
+// the given node. If any of these plugins doesn't return "Success", the
+// given node is not suitable for running pod.
+// Meanwhile, the failure message and status are set for the given node.
+func (f *frameworkImpl) RunFilterPlugins(
+	ctx context.Context,
+	pod *Pod,
+	nodeInfo *NodeInfo,
+) framework.PluginToStatus {
+	statuses := make(framework.PluginToStatus)
+	for _, pl := range f.filterPlugins {
+		pluginStatus := f.runFilterPlugin(ctx, pl, pod, nodeInfo)
+		if !pluginStatus.IsSuccess() {
+			if !pluginStatus.IsUnschedulable() {
+				// Filter plugins are not supposed to return any status other than
+				// Success or Unschedulable.
+				errStatus := framework.AsStatus(fmt.Errorf("running %q filter plugin: %w", pl.Name(), pluginStatus.AsError())).WithFailedPlugin(pl.Name())
+				return map[string]*framework.Status{pl.Name(): errStatus}
+			}
+			pluginStatus.SetFailedPlugin(pl.Name())
+			statuses[pl.Name()] = pluginStatus
+		}
+	}
+
+	return statuses
+}
+
 // RunPreFilterPlugins runs the set of configured PreFilter plugins. It returns
 // *Status and its code is set to non-success if any of the plugins returns
 // anything but Success. If a non-success status is returned, then the scheduling
@@ -116,7 +157,7 @@ func (f *frameworkImpl) RunPreFilterPlugins(ctx context.Context, pod *Pod) (*Pre
 			if len(pluginsWithNodes) == 1 {
 				msg = fmt.Sprintf("node(s) didn't satisfy plugin %v", pluginsWithNodes[0])
 			}
-			return nil, framework.NewStatus(framework.Unschedulable, msg)
+			return nil, fmt.Errorf("%s", msg)
 		}
 
 	}
@@ -124,7 +165,7 @@ func (f *frameworkImpl) RunPreFilterPlugins(ctx context.Context, pod *Pod) (*Pre
 }
 
 func (f *frameworkImpl) runPreFilterPlugin(ctx context.Context, pl PreFilterPlugin, pod *Pod) (*PreFilterResult, error) {
-	return nil, nil
+	return pl.PreFilter(ctx, pod)
 }
 
 func (f *frameworkImpl) RunReservePluginsReserve(ctx context.Context, pod *Pod, nodeName string) error {

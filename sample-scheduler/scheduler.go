@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"sync/atomic"
 	"time"
 )
 
@@ -255,6 +256,37 @@ func (sched *Scheduler) findNodesThatPassFilters(
 		sched.nextStartNodeIndex = (sched.nextStartNodeIndex + len(feasibleNodes)) % length
 		return feasibleNodes, nil
 	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	var feasibleNodesLen int32
+
+	checkNode := func(i int) {
+		// We check the nodes starting from where we left off in the previous scheduling cycle,
+		// this is to make sure all nodes have the same chance of being examined across pods.
+		nodeInfo := nodes[(sched.nextStartNodeIndex+i)%len(nodes)]
+		err := fwk.RunFilterPlugins(ctx, pod, nodeInfo)
+		if err != nil {
+			fmt.Printf("%s\n", err)
+			return
+		}
+
+		length := atomic.AddInt32(&feasibleNodesLen, 1)
+		if length > numNodesToFind {
+			cancel()
+			atomic.AddInt32(&feasibleNodesLen, -1)
+		} else {
+			feasibleNodes[length-1] = nodeInfo.node
+		}
+	}
+
+	// Stops searching for more nodes once the configured number of feasible nodes
+	// are found.
+	fwk.Parallelizer().Until(ctx, len(nodes), checkNode)
+	processedNodes := int(feasibleNodesLen) + int(numNodesToFind)
+	sched.nextStartNodeIndex = (sched.nextStartNodeIndex + processedNodes) % len(nodes)
+
+	feasibleNodes = feasibleNodes[:feasibleNodesLen]
+	return feasibleNodes, nil
 
 	return feasibleNodes, nil
 }
