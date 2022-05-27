@@ -46,8 +46,9 @@ func createPodInfos(n int) []*PodInfo {
 	podInfos := []*PodInfo{}
 	for i := 0; i < n; i++ {
 		pod := &Pod{
-			uid:  fmt.Sprintf("%d", i+1),
-			name: fmt.Sprintf("pod%d", i+1),
+			uid:      fmt.Sprintf("%d", i+1),
+			name:     fmt.Sprintf("pod%d", i+1),
+			nodeName: fmt.Sprintf("node%d", i),
 		}
 		podInfo := NewPodInfo(pod)
 		podInfo.schedulerName = "default-scheduler"

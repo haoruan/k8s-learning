@@ -49,7 +49,7 @@ type Scheduler struct {
 
 func NewScheduler(queue *PriorityQueue) *Scheduler {
 	profiles := map[string]Framework{
-		"default-scheduler": &frameworkImpl{},
+		"default-scheduler": &frameworkImpl{parallelizer: NewParallelizer(DefaultParallelism)},
 	}
 	return &Scheduler{
 		Cache:            NewCache(),
@@ -286,8 +286,6 @@ func (sched *Scheduler) findNodesThatPassFilters(
 	sched.nextStartNodeIndex = (sched.nextStartNodeIndex + processedNodes) % len(nodes)
 
 	feasibleNodes = feasibleNodes[:feasibleNodesLen]
-	return feasibleNodes, nil
-
 	return feasibleNodes, nil
 }
 

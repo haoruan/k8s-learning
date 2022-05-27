@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-
-	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 type Framework interface {
@@ -15,7 +13,7 @@ type Framework interface {
 	// preemption, we may pass a copy of the original nodeInfo object that has some pods
 	// removed from it to evaluate the possibility of preempting them to
 	// schedule the target pod.
-	RunFilterPlugins(context.Context, *Pod, *NodeInfo) PluginToStatus
+	RunFilterPlugins(context.Context, *Pod, *NodeInfo) error
 
 	// RunPreFilterPlugins runs the set of configured PreFilter plugins. It returns
 	// *Status and its code is set to non-success if any of the plugins returns
@@ -28,6 +26,8 @@ type Framework interface {
 	RunPermitPlugins(ctx context.Context, pod *Pod, nodeName string) error
 	// HasFilterPlugins returns true if at least one Filter plugin is defined.
 	HasFilterPlugins() bool
+
+	Parallelizer() Parallelizer
 }
 
 // Plugin is the parent type for all the scheduling framework plugins.
@@ -53,8 +53,33 @@ type PreFilterPlugin interface {
 	// PreFilterExtensions() PreFilterExtensions
 }
 
+// FilterPlugin is an interface for Filter plugins. These plugins are called at the
+// filter extension point for filtering out hosts that cannot run a pod.
+// This concept used to be called 'predicate' in the original scheduler.
+// These plugins should return "Success", "Unschedulable" or "Error" in Status.code.
+// However, the scheduler accepts other valid codes as well.
+// Anything other than "Success" will lead to exclusion of the given host from
+// running the pod.
+type FilterPlugin interface {
+	Plugin
+	// Filter is called by the scheduling framework.
+	// All FilterPlugins should return "Success" to declare that
+	// the given node fits the pod. If Filter doesn't return "Success",
+	// it will return "Unschedulable", "UnschedulableAndUnresolvable" or "Error".
+	// For the node being evaluated, Filter plugins should look at the passed
+	// nodeInfo reference for this particular node's information (e.g., pods
+	// considered to be running on the node) instead of looking it up in the
+	// NodeInfoSnapshot because we don't guarantee that they will be the same.
+	// For example, during preemption, we may pass a copy of the original
+	// nodeInfo object that has some pods removed from it to evaluate the
+	// possibility of preempting them to schedule the target pod.
+	Filter(ctx context.Context, pod *Pod, nodeInfo *NodeInfo) error
+}
+
 type frameworkImpl struct {
 	preFilterPlugins []PreFilterPlugin
+	filterPlugins    []FilterPlugin
+	parallelizer     Parallelizer
 }
 
 // PreFilterResult wraps needed info for scheduler framework to act upon PreFilter phase.
@@ -113,23 +138,15 @@ func (f *frameworkImpl) RunFilterPlugins(
 	ctx context.Context,
 	pod *Pod,
 	nodeInfo *NodeInfo,
-) framework.PluginToStatus {
-	statuses := make(framework.PluginToStatus)
+) error {
 	for _, pl := range f.filterPlugins {
-		pluginStatus := f.runFilterPlugin(ctx, pl, pod, nodeInfo)
-		if !pluginStatus.IsSuccess() {
-			if !pluginStatus.IsUnschedulable() {
-				// Filter plugins are not supposed to return any status other than
-				// Success or Unschedulable.
-				errStatus := framework.AsStatus(fmt.Errorf("running %q filter plugin: %w", pl.Name(), pluginStatus.AsError())).WithFailedPlugin(pl.Name())
-				return map[string]*framework.Status{pl.Name(): errStatus}
-			}
-			pluginStatus.SetFailedPlugin(pl.Name())
-			statuses[pl.Name()] = pluginStatus
+		err := f.runFilterPlugin(ctx, pl, pod, nodeInfo)
+		if err != nil {
+			return err
 		}
 	}
 
-	return statuses
+	return nil
 }
 
 // RunPreFilterPlugins runs the set of configured PreFilter plugins. It returns
@@ -168,6 +185,10 @@ func (f *frameworkImpl) runPreFilterPlugin(ctx context.Context, pl PreFilterPlug
 	return pl.PreFilter(ctx, pod)
 }
 
+func (f *frameworkImpl) runFilterPlugin(ctx context.Context, pl FilterPlugin, pod *Pod, nodeInfo *NodeInfo) error {
+	return pl.Filter(ctx, pod, nodeInfo)
+}
+
 func (f *frameworkImpl) RunReservePluginsReserve(ctx context.Context, pod *Pod, nodeName string) error {
 	return nil
 }
@@ -178,4 +199,9 @@ func (f *frameworkImpl) RunPermitPlugins(ctx context.Context, pod *Pod, nodeName
 
 func (f *frameworkImpl) HasFilterPlugins() bool {
 	return false
+}
+
+// Parallelizer returns a parallelizer holding parallelism for scheduler.
+func (f *frameworkImpl) Parallelizer() Parallelizer {
+	return f.parallelizer
 }

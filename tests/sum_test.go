@@ -3,6 +3,7 @@ package tests
 import (
 	"fmt"
 	"runtime"
+	"sync"
 	"testing"
 )
 
@@ -32,14 +33,23 @@ func BenchmarkParallelSum(b *testing.B) {
 	b.ResetTimer()
 	for k := 0; k < b.N; k++ {
 		t = 0
+		ch := make(chan int64, numCpu)
+		for i := int64(0); i < numCpu; i++ {
+			ch <- i
+		}
+		close(ch)
 		for i = 0; i < numCpu; i++ {
-			go func(i, n int64, stopCh chan<- int64) {
-				var sum int64
-				for ; i < n; i++ {
-					sum += i
+			go func() {
+				for c := range ch {
+					start := c * n / numCpu
+					end := (c + 1) * n / numCpu
+					var sum int64
+					for j := start; j < end; j++ {
+						sum += j
+					}
+					stopCh <- sum
 				}
-				stopCh <- sum
-			}(i*n/numCpu, (i+1)*n/numCpu, stopCh)
+			}()
 		}
 
 		for i = 0; i < numCpu; i++ {
@@ -47,4 +57,25 @@ func BenchmarkParallelSum(b *testing.B) {
 		}
 	}
 	b.StopTimer()
+
+}
+
+func TestParallel(t *testing.T) {
+	ch := make(chan int, 5)
+	for i := 0; i < 5; i++ {
+		ch <- i
+	}
+	close(ch)
+
+	var wg sync.WaitGroup
+	wg.Add(5)
+	for i := 0; i < 5; i++ {
+		go func() {
+			defer wg.Done()
+			for c := range ch {
+				t.Log(c)
+			}
+		}()
+	}
+	wg.Wait()
 }

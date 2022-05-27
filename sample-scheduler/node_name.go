@@ -9,6 +9,7 @@ import (
 type NodeName struct{}
 
 var _ PreFilterPlugin = &NodeName{}
+var _ FilterPlugin = &NodeName{}
 
 //var _ framework.FilterPlugin = &NodeName{}
 //var _ framework.EnqueueExtensions = &NodeName{}
@@ -30,6 +31,18 @@ func (pl *NodeName) Name() string {
 func (pl *NodeName) PreFilter(_ context.Context, _ *Pod) (*PreFilterResult, error) {
 	fmt.Printf("%s PreFilter called\n", Name)
 	return nil, nil
+}
+
+func (pl *NodeName) Filter(ctx context.Context, pod *Pod, nodeInfo *NodeInfo) error {
+	if nodeInfo.node == nil {
+		fmt.Errorf("node not found")
+	}
+
+	if pod.nodeName != nodeInfo.node.name {
+		fmt.Errorf("%s", ErrReason)
+	}
+
+	return nil
 }
 
 // New initializes a new plugin and returns it.
