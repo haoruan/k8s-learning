@@ -44,6 +44,7 @@ type Scheduler struct {
 	nodeInfoSnapshot   *Snapshot
 	NextPod            func() *PodInfo
 	Profiles           map[string]Framework
+	Extenders          []Extender
 	nextStartNodeIndex int
 }
 
@@ -228,7 +229,7 @@ func (sched *Scheduler) findNodesThatFitPod(ctx context.Context, fwk Framework, 
 		return nil, err
 	}
 
-	feasibleNodes, err = findNodesThatPassExtenders(pod, feasibleNodes)
+	feasibleNodes, err = findNodesThatPassExtenders(sched.Extenders, pod, feasibleNodes)
 	if err != nil {
 		return nil, err
 	}
@@ -313,7 +314,34 @@ func (sched *Scheduler) numFeasibleNodesToFind(numAllNodes int32) (numNodes int3
 	return numNodes
 }
 
-func findNodesThatPassExtenders(pod *Pod, feasibleNodes []*Node) ([]*Node, error) {
+func findNodesThatPassExtenders(extenders []Extender, pod *Pod, feasibleNodes []*Node) ([]*Node, error) {
+	// Extenders are called sequentially.
+	// Nodes in original feasibleNodes can be excluded in one extender, and pass on to the next
+	// extender in a decreasing manner.
+	for _, extender := range extenders {
+		if len(feasibleNodes) == 0 {
+			break
+		}
+		if !extender.IsInterested(pod) {
+			continue
+		}
+
+		// Status of failed nodes in failedAndUnresolvableMap will be added or overwritten in <statuses>,
+		// so that the scheduler framework can respect the UnschedulableAndUnresolvable status for
+		// particular nodes, and this may eventually improve preemption efficiency.
+		// Note: users are recommended to configure the extenders that may return UnschedulableAndUnresolvable
+		// status ahead of others.
+		feasibleList, err := extender.Filter(pod, feasibleNodes)
+		if err != nil {
+			if extender.IsIgnorable() {
+				fmt.Printf("Skipping extender as it returned error and has ignorable flag set, extender %s, err %s\n", extender.Name(), err)
+				continue
+			}
+			return nil, err
+		}
+
+		feasibleNodes = feasibleList
+	}
 	return feasibleNodes, nil
 }
 
