@@ -26,6 +26,8 @@ type Framework interface {
 	RunPermitPlugins(ctx context.Context, pod *Pod, nodeName string) error
 	// HasFilterPlugins returns true if at least one Filter plugin is defined.
 	HasFilterPlugins() bool
+	// HasScorePlugins returns true if at least one Score plugin is defined.
+	HasScorePlugins() bool
 
 	Parallelizer() Parallelizer
 }

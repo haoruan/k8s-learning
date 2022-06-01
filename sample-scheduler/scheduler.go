@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -352,17 +353,78 @@ func findNodesThatPassExtenders(extenders []Extender, pod *Pod, feasibleNodes []
 // All scores are finally combined (added) to get the total weighted scores of all nodes
 func prioritizeNodes(
 	ctx context.Context,
+	extenders []Extender,
 	fwk Framework,
 	pod *Pod,
 	nodes []*Node,
 ) ([]NodeScore, error) {
+	// If no priority configs are provided, then all nodes will have a score of one.
+	// This is required to generate the priority list in the required format
+	if len(extenders) == 0 && !fwk.HasScorePlugins() {
+		result := make([]NodeScore, 0, len(nodes))
+		for i := range nodes {
+			result = append(result, NodeScore{
+				Name:  nodes[i].name,
+				Score: 1,
+			})
+		}
+		return result, nil
+	}
+
+	// Run PreScore plugins.
+	err := fwk.RunPreScorePlugins(ctx, pod, nodes)
+	if err != nil {
+		return nil, err
+	}
+
+	// Run the Score plugins.
+	scoresMap, err := fwk.RunScorePlugins(ctx, pod, nodes)
+	if err != nil {
+		return nil, err
+	}
+
+	// Summarize all scores.
 	result := make([]NodeScore, 0, len(nodes))
 	for i := range nodes {
-		result = append(result, NodeScore{
-			Name:  nodes[i].name,
-			Score: 1,
-		})
+		result = append(result, NodeScore{Name: nodes[i].name, Score: 0})
+		for j := range scoresMap {
+			result[i].Score += scoresMap[j][i].Score
+		}
 	}
+
+	if len(extenders) != 0 && nodes != nil {
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		combinedScores := make(map[string]int64, len(nodes))
+		for i := range extenders {
+			if !extenders[i].IsInterested(pod) {
+				continue
+			}
+			wg.Add(1)
+			go func(extIndex int) {
+				defer wg.Done()
+				prioritizedList, weight, err := extenders[extIndex].Prioritize(pod, nodes)
+				if err != nil {
+					// Prioritization errors from extender can be ignored, let k8s/other extenders determine the priorities
+					fmt.Printf("Failed to run extender's priority function. No score given by this extender, error %s, pod %s, extender %s\n", err, pod.name, extenders[extIndex].Name())
+					return
+				}
+				mu.Lock()
+				for i := range *prioritizedList {
+					host, score := (*prioritizedList)[i].Host, (*prioritizedList)[i].Score
+					fmt.Printf("Extender scored node for pod %s, extender %s, node %s, score %s\n", pod.name, extenders[extIndex].Name(), host, score)
+					combinedScores[host] += score * weight
+				}
+				mu.Unlock()
+			}(i)
+		}
+		// wait for all go routines to finish
+		wg.Wait()
+		for i := range result {
+			result[i].Score += combinedScores[result[i].Name]
+		}
+	}
+
 	return result, nil
 }
 
