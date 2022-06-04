@@ -21,6 +21,7 @@ type Node struct {
 	name   string
 	images []ContainerImage
 	zone   string
+	score  int64
 }
 
 // NodeScore is a struct with node name and score.

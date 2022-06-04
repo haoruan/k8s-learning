@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-
-	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 type Framework interface {
@@ -26,6 +24,9 @@ type Framework interface {
 	RunPreFilterPlugins(ctx context.Context, pod *Pod) (*PreFilterResult, error)
 	RunReservePluginsReserve(ctx context.Context, pod *Pod, nodeName string) error
 	RunPermitPlugins(ctx context.Context, pod *Pod, nodeName string) error
+
+	RunPreScorePlugins(ctx context.Context, pod *Pod, nodes []*Node) error
+	RunScorePlugins(ctx context.Context, pod *Pod, nodes []*Node) (map[string][]NodeScore, error)
 	// HasFilterPlugins returns true if at least one Filter plugin is defined.
 	HasFilterPlugins() bool
 	// HasScorePlugins returns true if at least one Score plugin is defined.
@@ -80,9 +81,33 @@ type FilterPlugin interface {
 	Filter(ctx context.Context, pod *Pod, nodeInfo *NodeInfo) error
 }
 
+// PreScorePlugin is an interface for "PreScore" plugin. PreScore is an
+// informational extension point. Plugins will be called with a list of nodes
+// that passed the filtering phase. A plugin may use this data to update internal
+// state or to generate logs/metrics.
+type PreScorePlugin interface {
+	Plugin
+	// PreScore is called by the scheduling framework after a list of nodes
+	// passed the filtering phase. All prescore plugins must return success or
+	// the pod will be rejected
+	PreScore(ctx context.Context, pod *Pod, nodes []*Node) error
+}
+
+// ScorePlugin is an interface that must be implemented by "Score" plugins to rank
+// nodes that passed the filtering phase.
+type ScorePlugin interface {
+	Plugin
+	// Score is called on each filtered node. It must return success and an integer
+	// indicating the rank of the node. All scoring plugins must return success or
+	// the pod will be rejected.
+	Score(ctx context.Context, p *Pod, node *Node) (int64, error)
+}
+
 type frameworkImpl struct {
 	preFilterPlugins []PreFilterPlugin
 	filterPlugins    []FilterPlugin
+	preScorePlugins  []PreScorePlugin
+	scorePlugins     []ScorePlugin
 	parallelizer     Parallelizer
 }
 
@@ -206,20 +231,21 @@ func (f *frameworkImpl) RunPreScorePlugins(
 // stores for each scoring plugin name the corresponding NodeScoreList(s).
 // It also returns *Status, which is set to non-success if any of the plugins returns
 // a non-success status.
-func (f *frameworkImpl) RunScorePlugins(ctx context.Context, pod *Pod, nodes []*Node) (ps map[string][]NodeScore, status *framework.Status) {
+func (f *frameworkImpl) RunScorePlugins(ctx context.Context, pod *Pod, nodes []*Node) (map[string][]NodeScore, error) {
 	pluginToNodeScores := make(map[string][]NodeScore, len(f.scorePlugins))
 	for _, pl := range f.scorePlugins {
 		pluginToNodeScores[pl.Name()] = make([]NodeScore, len(nodes))
 	}
 	ctx, cancel := context.WithCancel(ctx)
+	errCh := NewErrorChannel()
 
 	// Run Score method for each node in parallel.
 	f.Parallelizer().Until(ctx, len(nodes), func(index int) {
 		for _, pl := range f.scorePlugins {
 			nodeName := nodes[index].name
-			s, err := f.runScorePlugin(ctx, pl, pod, nodeName)
+			s, err := f.runScorePlugin(ctx, pl, pod, nodes[index])
 			if err != nil {
-				fmt.Printf("plugin %q failed with: %w\n", pl.Name(), status.AsError())
+				errCh.SendErrorWithCancel(fmt.Errorf("plugin %q failed with: %w", pl.Name(), err), cancel)
 				return
 			}
 			pluginToNodeScores[pl.Name()][index] = NodeScore{
@@ -229,46 +255,7 @@ func (f *frameworkImpl) RunScorePlugins(ctx context.Context, pod *Pod, nodes []*
 		}
 	})
 	if err := errCh.ReceiveError(); err != nil {
-		return nil, framework.AsStatus(fmt.Errorf("running Score plugins: %w", err))
-	}
-
-	// Run NormalizeScore method for each ScorePlugin in parallel.
-	f.Parallelizer().Until(ctx, len(f.scorePlugins), func(index int) {
-		pl := f.scorePlugins[index]
-		nodeScoreList := pluginToNodeScores[pl.Name()]
-		if pl.ScoreExtensions() == nil {
-			return
-		}
-		status := f.runScoreExtension(ctx, pl, state, pod, nodeScoreList)
-		if !status.IsSuccess() {
-			err := fmt.Errorf("plugin %q failed with: %w", pl.Name(), status.AsError())
-			errCh.SendErrorWithCancel(err, cancel)
-			return
-		}
-	})
-	if err := errCh.ReceiveError(); err != nil {
-		return nil, framework.AsStatus(fmt.Errorf("running Normalize on Score plugins: %w", err))
-	}
-
-	// Apply score defaultWeights for each ScorePlugin in parallel.
-	f.Parallelizer().Until(ctx, len(f.scorePlugins), func(index int) {
-		pl := f.scorePlugins[index]
-		// Score plugins' weight has been checked when they are initialized.
-		weight := f.scorePluginWeight[pl.Name()]
-		nodeScoreList := pluginToNodeScores[pl.Name()]
-
-		for i, nodeScore := range nodeScoreList {
-			// return error if score plugin returns invalid score.
-			if nodeScore.Score > framework.MaxNodeScore || nodeScore.Score < framework.MinNodeScore {
-				err := fmt.Errorf("plugin %q returns an invalid score %v, it should in the range of [%v, %v] after normalizing", pl.Name(), nodeScore.Score, framework.MinNodeScore, framework.MaxNodeScore)
-				errCh.SendErrorWithCancel(err, cancel)
-				return
-			}
-			nodeScoreList[i].Score = nodeScore.Score * int64(weight)
-		}
-	})
-	if err := errCh.ReceiveError(); err != nil {
-		return nil, framework.AsStatus(fmt.Errorf("applying score defaultWeights on Score plugins: %w", err))
+		return nil, err
 	}
 
 	return pluginToNodeScores, nil
@@ -282,12 +269,12 @@ func (f *frameworkImpl) runFilterPlugin(ctx context.Context, pl FilterPlugin, po
 	return pl.Filter(ctx, pod, nodeInfo)
 }
 
-func (f *frameworkImpl) runPreScorePlugin(ctx context.Context, pl framework.PreScorePlugin, pod *Pod, nodes []*Node) error {
+func (f *frameworkImpl) runPreScorePlugin(ctx context.Context, pl PreScorePlugin, pod *Pod, nodes []*Node) error {
 	return pl.PreScore(ctx, pod, nodes)
 }
 
-func (f *frameworkImpl) runScorePlugin(ctx context.Context, pl framework.ScorePlugin, pod *Pod, nodeName string) (int64, error) {
-	return pl.Score(ctx, pod, nodeName)
+func (f *frameworkImpl) runScorePlugin(ctx context.Context, pl ScorePlugin, pod *Pod, node *Node) (int64, error) {
+	return pl.Score(ctx, pod, node)
 }
 
 func (f *frameworkImpl) RunReservePluginsReserve(ctx context.Context, pod *Pod, nodeName string) error {
@@ -298,11 +285,25 @@ func (f *frameworkImpl) RunPermitPlugins(ctx context.Context, pod *Pod, nodeName
 	return nil
 }
 
+func (f *frameworkImpl) HasScorePlugins() bool {
+	return true
+}
+
 func (f *frameworkImpl) HasFilterPlugins() bool {
-	return false
+	return true
 }
 
 // Parallelizer returns a parallelizer holding parallelism for scheduler.
 func (f *frameworkImpl) Parallelizer() Parallelizer {
 	return f.parallelizer
+}
+
+func NewFrameWork() Framework {
+	return &frameworkImpl{
+		parallelizer:     NewParallelizer(DefaultParallelism),
+		preFilterPlugins: []PreFilterPlugin{&NodeName{}},
+		filterPlugins:    []FilterPlugin{&NodeName{}},
+		preScorePlugins:  []PreScorePlugin{&NodeName{}},
+		scorePlugins:     []ScorePlugin{&NodeName{}},
+	}
 }

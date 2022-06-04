@@ -22,7 +22,7 @@ type Extender interface {
 	// Prioritize based on extender-implemented priority functions. The returned scores & weight
 	// are used to compute the weighted score for an extender. The weighted scores are added to
 	// the scores computed by Kubernetes scheduler. The total scores are used to do the host selection.
-	// Prioritize(pod *Pod, nodes []*Node) (hostPriorities *extenderv1.HostPriorityList, weight int64, err error)
+	Prioritize(pod *Pod, nodes []*Node) (hostPriorities []NodeScore, weight int64, err error)
 
 	// Bind delegates the action of binding a pod to a node to the extender.
 	// Bind(binding *Binding) error
@@ -105,4 +105,12 @@ func (h *MyExtender) Filter(pod *Pod, nodes []*Node) (filteredNodes []*Node, err
 	}
 
 	return filteredNodes, nil
+}
+
+func (h *MyExtender) Prioritize(pod *Pod, nodes []*Node) (hostPriorities []NodeScore, weight int64, err error) {
+	for i, node := range nodes {
+		hostPriorities = append(hostPriorities, NodeScore{node.name, int64(i)})
+	}
+
+	return hostPriorities, 1, nil
 }

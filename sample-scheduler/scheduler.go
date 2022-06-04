@@ -51,7 +51,7 @@ type Scheduler struct {
 
 func NewScheduler(queue *PriorityQueue) *Scheduler {
 	profiles := map[string]Framework{
-		"default-scheduler": &frameworkImpl{parallelizer: NewParallelizer(DefaultParallelism)},
+		"default-scheduler": NewFrameWork(),
 	}
 	return &Scheduler{
 		Cache:            NewCache(),
@@ -187,7 +187,7 @@ func (sched *Scheduler) schedulePod(ctx context.Context, fwk Framework, pod *Pod
 		}, nil
 	}
 
-	priorityList, err := prioritizeNodes(ctx, fwk, pod, feasibleNodes)
+	priorityList, err := prioritizeNodes(ctx, sched.Extenders, fwk, pod, feasibleNodes)
 	if err != nil {
 		return result, err
 	}
@@ -410,9 +410,9 @@ func prioritizeNodes(
 					return
 				}
 				mu.Lock()
-				for i := range *prioritizedList {
-					host, score := (*prioritizedList)[i].Host, (*prioritizedList)[i].Score
-					fmt.Printf("Extender scored node for pod %s, extender %s, node %s, score %s\n", pod.name, extenders[extIndex].Name(), host, score)
+				for _, v := range prioritizedList {
+					host, score := v.Name, v.Score
+					fmt.Printf("Extender scored node for pod %s, extender %s, node %s, score %d\n", pod.name, extenders[extIndex].Name(), host, score)
 					combinedScores[host] += score * weight
 				}
 				mu.Unlock()

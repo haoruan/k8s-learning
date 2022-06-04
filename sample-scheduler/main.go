@@ -31,12 +31,16 @@ func createNodes(n int) []*Node {
 	nodes := []*Node{}
 
 	for i := 0; i < n; i++ {
-		node := &Node{
-			fmt.Sprintf("node%d", i),
-			[]ContainerImage{},
-			fmt.Sprintf("zone%d", i),
+		for j := 0; j < 3; j++ {
+			node := &Node{
+				fmt.Sprintf("node%d-%d", i, j),
+				[]ContainerImage{},
+				fmt.Sprintf("zone%d", i),
+				int64(j),
+			}
+			nodes = append(nodes, node)
+
 		}
-		nodes = append(nodes, node)
 	}
 
 	return nodes
