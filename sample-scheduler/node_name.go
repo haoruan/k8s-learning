@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // NodeName is a plugin that checks if a pod spec node name matches the current node.
@@ -12,6 +13,8 @@ type NodeName struct{}
 var _ PreFilterPlugin = &NodeName{}
 var _ FilterPlugin = &NodeName{}
 var _ ScorePlugin = &NodeName{}
+var _ ReservePlugin = &NodeName{}
+var _ PermitPlugin = &NodeName{}
 
 //var _ framework.FilterPlugin = &NodeName{}
 //var _ framework.EnqueueExtensions = &NodeName{}
@@ -55,6 +58,14 @@ func (pl *NodeName) PreScore(ctx context.Context, pod *Pod, nodes []*Node) error
 
 func (pl *NodeName) Score(ctx context.Context, p *Pod, node *Node) (int64, error) {
 	return node.score, nil
+}
+
+func (pl *NodeName) Reserve(ctx context.Context, p *Pod, nodeName string) error {
+	return nil
+}
+
+func (pl *NodeName) Permit(ctx context.Context, p *Pod, nodeName string) (time.Duration, error) {
+	return 0, nil
 }
 
 // New initializes a new plugin and returns it.

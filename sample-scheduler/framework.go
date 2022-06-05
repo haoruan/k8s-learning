@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 type Framework interface {
@@ -103,12 +104,47 @@ type ScorePlugin interface {
 	Score(ctx context.Context, p *Pod, node *Node) (int64, error)
 }
 
+// ReservePlugin is an interface for plugins with Reserve and Unreserve
+// methods. These are meant to update the state of the plugin. This concept
+// used to be called 'assume' in the original scheduler. These plugins should
+// return only Success or Error in Status.code. However, the scheduler accepts
+// other valid codes as well. Anything other than Success will lead to
+// rejection of the pod.
+type ReservePlugin interface {
+	Plugin
+	// Reserve is called by the scheduling framework when the scheduler cache is
+	// updated. If this method returns a failed Status, the scheduler will call
+	// the Unreserve method for all enabled ReservePlugins.
+	Reserve(ctx context.Context, p *Pod, nodeName string) error
+	// Unreserve is called by the scheduling framework when a reserved pod was
+	// rejected, an error occurred during reservation of subsequent plugins, or
+	// in a later phase. The Unreserve method implementation must be idempotent
+	// and may be called by the scheduler even if the corresponding Reserve
+	// method for the same plugin was not called.
+	// Unreserve(ctx context.Context, p *Pod, nodeName string)
+}
+
+// PermitPlugin is an interface that must be implemented by "Permit" plugins.
+// These plugins are called before a pod is bound to a node.
+type PermitPlugin interface {
+	Plugin
+	// Permit is called before binding a pod (and before prebind plugins). Permit
+	// plugins are used to prevent or delay the binding of a Pod. A permit plugin
+	// must return success or wait with timeout duration, or the pod will be rejected.
+	// The pod will also be rejected if the wait timeout or the pod is rejected while
+	// waiting. Note that if the plugin returns "wait", the framework will wait only
+	// after running the remaining plugins given that no other plugin rejects the pod.
+	Permit(ctx context.Context, p *Pod, nodeName string) (time.Duration, error)
+}
+
 type frameworkImpl struct {
 	preFilterPlugins []PreFilterPlugin
 	filterPlugins    []FilterPlugin
 	preScorePlugins  []PreScorePlugin
 	scorePlugins     []ScorePlugin
 	parallelizer     Parallelizer
+	reservePlugins   []ReservePlugin
+	permitPlugins    []PermitPlugin
 }
 
 // PreFilterResult wraps needed info for scheduler framework to act upon PreFilter phase.
@@ -261,6 +297,26 @@ func (f *frameworkImpl) RunScorePlugins(ctx context.Context, pod *Pod, nodes []*
 	return pluginToNodeScores, nil
 }
 
+func (f *frameworkImpl) RunReservePluginsReserve(ctx context.Context, pod *Pod, nodeName string) error {
+	for _, pl := range f.reservePlugins {
+		err := f.runReservePluginReserve(ctx, pl, pod, nodeName)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *frameworkImpl) RunPermitPlugins(ctx context.Context, pod *Pod, nodeName string) error {
+	for _, pl := range f.permitPlugins {
+		_, err := f.runPermitPlugin(ctx, pl, pod, nodeName)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (f *frameworkImpl) runPreFilterPlugin(ctx context.Context, pl PreFilterPlugin, pod *Pod) (*PreFilterResult, error) {
 	return pl.PreFilter(ctx, pod)
 }
@@ -277,12 +333,12 @@ func (f *frameworkImpl) runScorePlugin(ctx context.Context, pl ScorePlugin, pod 
 	return pl.Score(ctx, pod, node)
 }
 
-func (f *frameworkImpl) RunReservePluginsReserve(ctx context.Context, pod *Pod, nodeName string) error {
-	return nil
+func (f *frameworkImpl) runReservePluginReserve(ctx context.Context, pl ReservePlugin, pod *Pod, nodeName string) error {
+	return pl.Reserve(ctx, pod, nodeName)
 }
 
-func (f *frameworkImpl) RunPermitPlugins(ctx context.Context, pod *Pod, nodeName string) error {
-	return nil
+func (f *frameworkImpl) runPermitPlugin(ctx context.Context, pl PermitPlugin, pod *Pod, nodeName string) (time.Duration, error) {
+	return pl.Permit(ctx, pod, nodeName)
 }
 
 func (f *frameworkImpl) HasScorePlugins() bool {
