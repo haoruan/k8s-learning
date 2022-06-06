@@ -15,6 +15,8 @@ var _ FilterPlugin = &NodeName{}
 var _ ScorePlugin = &NodeName{}
 var _ ReservePlugin = &NodeName{}
 var _ PermitPlugin = &NodeName{}
+var _ PreBindPlugin = &NodeName{}
+var _ PostBindPlugin = &NodeName{}
 
 //var _ framework.FilterPlugin = &NodeName{}
 //var _ framework.EnqueueExtensions = &NodeName{}
@@ -66,6 +68,18 @@ func (pl *NodeName) Reserve(ctx context.Context, p *Pod, nodeName string) error 
 
 func (pl *NodeName) Permit(ctx context.Context, p *Pod, nodeName string) (time.Duration, error) {
 	return 0, nil
+}
+
+// PreBind is the functions invoked by the framework at "prebind" extension point.
+func (pl *NodeName) PreBind(ctx context.Context, pod *Pod, nodeName string) error {
+	if pod == nil {
+		return fmt.Errorf("pod cannot be nil")
+	}
+	return nil
+}
+
+func (pl *NodeName) PostBind(ctx context.Context, pod *Pod, nodeName string) {
+	fmt.Println("PostBind")
 }
 
 // New initializes a new plugin and returns it.

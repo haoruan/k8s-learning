@@ -29,6 +29,17 @@ type Framework interface {
 	RunPreScorePlugins(ctx context.Context, pod *Pod, nodes []*Node) error
 	RunScorePlugins(ctx context.Context, pod *Pod, nodes []*Node) (map[string][]NodeScore, error)
 	// HasFilterPlugins returns true if at least one Filter plugin is defined.
+
+	// RunPreBindPlugins runs the set of configured PreBind plugins. It returns
+	// *Status and its code is set to non-success if any of the plugins returns
+	// anything but Success. If the Status code is "Unschedulable", it is
+	// considered as a scheduling check failure, otherwise, it is considered as an
+	// internal error. In either case the pod is not going to be bound.
+	RunPreBindPlugins(ctx context.Context, pod *Pod, nodeName string) error
+
+	// RunPostBindPlugins runs the set of configured PostBind plugins.
+	RunPostBindPlugins(ctx context.Context, pod *Pod, nodeName string)
+
 	HasFilterPlugins() bool
 	// HasScorePlugins returns true if at least one Score plugin is defined.
 	HasScorePlugins() bool
@@ -137,6 +148,26 @@ type PermitPlugin interface {
 	Permit(ctx context.Context, p *Pod, nodeName string) (time.Duration, error)
 }
 
+// PreBindPlugin is an interface that must be implemented by "PreBind" plugins.
+// These plugins are called before a pod being scheduled.
+type PreBindPlugin interface {
+	Plugin
+	// PreBind is called before binding a pod. All prebind plugins must return
+	// success or the pod will be rejected and won't be sent for binding.
+	PreBind(ctx context.Context, p *Pod, nodeName string) error
+}
+
+// PostBindPlugin is an interface that must be implemented by "PostBind" plugins.
+// These plugins are called after a pod is successfully bound to a node.
+type PostBindPlugin interface {
+	Plugin
+	// PostBind is called after a pod is successfully bound. These plugins are
+	// informational. A common application of this extension point is for cleaning
+	// up. If a plugin needs to clean-up its state after a pod is scheduled and
+	// bound, PostBind is the extension point that it should register.
+	PostBind(ctx context.Context, p *Pod, nodeName string)
+}
+
 type frameworkImpl struct {
 	preFilterPlugins []PreFilterPlugin
 	filterPlugins    []FilterPlugin
@@ -145,6 +176,8 @@ type frameworkImpl struct {
 	parallelizer     Parallelizer
 	reservePlugins   []ReservePlugin
 	permitPlugins    []PermitPlugin
+	preBindPlugins   []PreBindPlugin
+	postBindPlugins  []PostBindPlugin
 }
 
 // PreFilterResult wraps needed info for scheduler framework to act upon PreFilter phase.
@@ -317,6 +350,26 @@ func (f *frameworkImpl) RunPermitPlugins(ctx context.Context, pod *Pod, nodeName
 	return nil
 }
 
+// RunPreBindPlugins runs the set of configured prebind plugins. It returns a
+// failure (bool) if any of the plugins returns an error. It also returns an
+// error containing the rejection message or the error occurred in the plugin.
+func (f *frameworkImpl) RunPreBindPlugins(ctx context.Context, pod *Pod, nodeName string) error {
+	for _, pl := range f.preBindPlugins {
+		if err := f.runPreBindPlugin(ctx, pl, pod, nodeName); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// RunPostBindPlugins runs the set of configured postbind plugins.
+func (f *frameworkImpl) RunPostBindPlugins(ctx context.Context, pod *Pod, nodeName string) {
+	for _, pl := range f.postBindPlugins {
+		f.runPostBindPlugin(ctx, pl, pod, nodeName)
+	}
+}
+
 func (f *frameworkImpl) runPreFilterPlugin(ctx context.Context, pl PreFilterPlugin, pod *Pod) (*PreFilterResult, error) {
 	return pl.PreFilter(ctx, pod)
 }
@@ -339,6 +392,15 @@ func (f *frameworkImpl) runReservePluginReserve(ctx context.Context, pl ReserveP
 
 func (f *frameworkImpl) runPermitPlugin(ctx context.Context, pl PermitPlugin, pod *Pod, nodeName string) (time.Duration, error) {
 	return pl.Permit(ctx, pod, nodeName)
+}
+
+func (f *frameworkImpl) runPreBindPlugin(ctx context.Context, pl PreBindPlugin, pod *Pod, nodeName string) error {
+	return pl.PreBind(ctx, pod, nodeName)
+}
+
+func (f *frameworkImpl) runPostBindPlugin(ctx context.Context, pl PostBindPlugin, pod *Pod, nodeName string) {
+	pl.PostBind(ctx, pod, nodeName)
+	return
 }
 
 func (f *frameworkImpl) HasScorePlugins() bool {

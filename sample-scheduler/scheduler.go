@@ -150,7 +150,20 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 	// 5.Upon successfully running all extension points, proceed to the binding cycle.
 	//   At the same time start processing another pod (if there’s any).
 	go func() {
+		bindingCycleCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
 
+		// Run "prebind" plugins.
+		if err := fwk.RunPreBindPlugins(bindingCycleCtx, assumedPod, scheduleResult.SuggestedHost); err != nil {
+			fmt.Printf("%s\n", err)
+		}
+
+		if err := sched.bind(bindingCycleCtx, fwk, assumedPod, scheduleResult.SuggestedHost); err != nil {
+
+		}
+
+		// Run "postbind" plugins.
+		fwk.RunPostBindPlugins(bindingCycleCtx, assumedPod, scheduleResult.SuggestedHost)
 	}()
 }
 
