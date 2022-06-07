@@ -313,6 +313,10 @@ func (cache *cacheImpl) AssumePod(pod *Pod) error {
 	return cache.addPod(pod, true)
 }
 
+func (cache *cacheImpl) FinishBinding(pod *Pod) error {
+	return nil
+}
+
 // Assumes that lock is already acquired.
 func (cache *cacheImpl) addPod(pod *Pod, assumePod bool) error {
 	key := pod.uid

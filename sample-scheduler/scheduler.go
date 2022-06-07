@@ -159,12 +159,44 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 		}
 
 		if err := sched.bind(bindingCycleCtx, fwk, assumedPod, scheduleResult.SuggestedHost); err != nil {
-
+			return
 		}
 
 		// Run "postbind" plugins.
 		fwk.RunPostBindPlugins(bindingCycleCtx, assumedPod, scheduleResult.SuggestedHost)
 	}()
+}
+
+// bind binds a pod to a given node defined in a binding object.
+// The precedence for binding is: (1) extenders and (2) framework plugins.
+// We expect this to run asynchronously, so we handle binding metrics internally.
+func (sched *Scheduler) bind(ctx context.Context, fwk Framework, assumed *Pod, targetNode string) (err error) {
+	defer func() {
+		sched.finishBinding(fwk, assumed, targetNode, err)
+	}()
+
+	bound, err := sched.extendersBinding(assumed, targetNode)
+	if bound {
+		return err
+	}
+	if err = fwk.RunBindPlugins(ctx, assumed, targetNode); err != nil {
+		return fmt.Errorf("bind status: %s", err)
+	}
+
+	return nil
+}
+
+func (sched *Scheduler) extendersBinding(pod *Pod, node string) (bool, error) {
+	return false, nil
+}
+
+func (sched *Scheduler) finishBinding(fwk Framework, assumed *Pod, targetNode string, err error) {
+	if finErr := sched.Cache.FinishBinding(assumed); finErr != nil {
+		fmt.Printf("Scheduler cache FinishBinding failed: %s\n", finErr)
+	}
+	if err != nil {
+		fmt.Printf("Failed to bind pod %s\n", assumed.name)
+	}
 }
 
 // schedulePod tries to schedule the given pod to one of the nodes in the node list.

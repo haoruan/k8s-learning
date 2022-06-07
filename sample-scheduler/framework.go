@@ -40,6 +40,13 @@ type Framework interface {
 	// RunPostBindPlugins runs the set of configured PostBind plugins.
 	RunPostBindPlugins(ctx context.Context, pod *Pod, nodeName string)
 
+	// RunBindPlugins runs the set of configured Bind plugins. A Bind plugin may choose
+	// whether or not to handle the given Pod. If a Bind plugin chooses to skip the
+	// binding, it should return code=5("skip") status. Otherwise, it should return "Error"
+	// or "Success". If none of the plugins handled binding, RunBindPlugins returns
+	// code=5("skip") status.
+	RunBindPlugins(ctx context.Context, pod *Pod, nodeName string) error
+
 	HasFilterPlugins() bool
 	// HasScorePlugins returns true if at least one Score plugin is defined.
 	HasScorePlugins() bool
@@ -168,6 +175,19 @@ type PostBindPlugin interface {
 	PostBind(ctx context.Context, p *Pod, nodeName string)
 }
 
+// BindPlugin is an interface that must be implemented by "Bind" plugins. Bind
+// plugins are used to bind a pod to a Node.
+type BindPlugin interface {
+	Plugin
+	// Bind plugins will not be called until all pre-bind plugins have completed. Each
+	// bind plugin is called in the configured order. A bind plugin may choose whether
+	// or not to handle the given Pod. If a bind plugin chooses to handle a Pod, the
+	// remaining bind plugins are skipped. When a bind plugin does not handle a pod,
+	// it must return Skip in its Status code. If a bind plugin returns an Error, the
+	// pod is rejected and will not be bound.
+	Bind(ctx context.Context, p *Pod, nodeName string) error
+}
+
 type frameworkImpl struct {
 	preFilterPlugins []PreFilterPlugin
 	filterPlugins    []FilterPlugin
@@ -178,6 +198,7 @@ type frameworkImpl struct {
 	permitPlugins    []PermitPlugin
 	preBindPlugins   []PreBindPlugin
 	postBindPlugins  []PostBindPlugin
+	bindPlugins      []BindPlugin
 }
 
 // PreFilterResult wraps needed info for scheduler framework to act upon PreFilter phase.
@@ -370,6 +391,18 @@ func (f *frameworkImpl) RunPostBindPlugins(ctx context.Context, pod *Pod, nodeNa
 	}
 }
 
+// RunBindPlugins runs the set of configured bind plugins until one returns a non `Skip` status.
+func (f *frameworkImpl) RunBindPlugins(ctx context.Context, pod *Pod, nodeName string) error {
+	for _, bp := range f.bindPlugins {
+		if err := f.runBindPlugin(ctx, bp, pod, nodeName); err != nil {
+			continue
+		}
+		break
+	}
+	return nil
+
+}
+
 func (f *frameworkImpl) runPreFilterPlugin(ctx context.Context, pl PreFilterPlugin, pod *Pod) (*PreFilterResult, error) {
 	return pl.PreFilter(ctx, pod)
 }
@@ -400,7 +433,10 @@ func (f *frameworkImpl) runPreBindPlugin(ctx context.Context, pl PreBindPlugin, 
 
 func (f *frameworkImpl) runPostBindPlugin(ctx context.Context, pl PostBindPlugin, pod *Pod, nodeName string) {
 	pl.PostBind(ctx, pod, nodeName)
-	return
+}
+
+func (f *frameworkImpl) runBindPlugin(ctx context.Context, bp BindPlugin, pod *Pod, nodeName string) error {
+	return bp.Bind(ctx, pod, nodeName)
 }
 
 func (f *frameworkImpl) HasScorePlugins() bool {

@@ -17,6 +17,7 @@ var _ ReservePlugin = &NodeName{}
 var _ PermitPlugin = &NodeName{}
 var _ PreBindPlugin = &NodeName{}
 var _ PostBindPlugin = &NodeName{}
+var _ BindPlugin = &NodeName{}
 
 //var _ framework.FilterPlugin = &NodeName{}
 //var _ framework.EnqueueExtensions = &NodeName{}
@@ -80,6 +81,11 @@ func (pl *NodeName) PreBind(ctx context.Context, pod *Pod, nodeName string) erro
 
 func (pl *NodeName) PostBind(ctx context.Context, pod *Pod, nodeName string) {
 	fmt.Println("PostBind")
+}
+
+func (pl *NodeName) Bind(ctx context.Context, p *Pod, nodeName string) error {
+	fmt.Printf("Attempting to bind pod %s to node %s\n", p.name, nodeName)
+	return nil
 }
 
 // New initializes a new plugin and returns it.
