@@ -238,7 +238,7 @@ func (sched *Scheduler) schedulePod(ctx context.Context, fwk Framework, pod *Pod
 	}
 
 	host, err := selectHost(priorityList)
-	fmt.Printf("Prioritizing done")
+	fmt.Printf("Prioritizing done\n")
 
 	return ScheduleResult{
 		SuggestedHost:  host,

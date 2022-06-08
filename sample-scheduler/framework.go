@@ -459,5 +459,10 @@ func NewFrameWork() Framework {
 		filterPlugins:    []FilterPlugin{&NodeName{}},
 		preScorePlugins:  []PreScorePlugin{&NodeName{}},
 		scorePlugins:     []ScorePlugin{&NodeName{}},
+		reservePlugins:   []ReservePlugin{&NodeName{}},
+		permitPlugins:    []PermitPlugin{&NodeName{}},
+		preBindPlugins:   []PreBindPlugin{&NodeName{}},
+		postBindPlugins:  []PostBindPlugin{&NodeName{}},
+		bindPlugins:      []BindPlugin{&NodeName{}},
 	}
 }
