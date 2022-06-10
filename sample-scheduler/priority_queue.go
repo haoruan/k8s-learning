@@ -3,6 +3,8 @@ package main
 import (
 	"container/heap"
 	"sync"
+
+	"k8s.io/kubernetes/pkg/scheduler/metrics"
 )
 
 // lessFunc is a function that receives two items and returns true if the first
@@ -32,10 +34,68 @@ type Heap struct {
 	data *data
 }
 
+// UnschedulablePods holds pods that cannot be scheduled. This data structure
+// is used to implement unschedulablePods.
+type UnschedulablePods struct {
+	// podInfoMap is a map key by a pod's full-name and the value is a pointer to the QueuedPodInfo.
+	podInfoMap map[string]*PodInfo
+	keyFunc    func(*Pod) string
+}
+
+// Add adds a pod to the unschedulable podInfoMap.
+func (u *UnschedulablePods) addOrUpdate(pInfo *PodInfo) {
+	podID := u.keyFunc(pInfo.pod)
+	u.podInfoMap[podID] = pInfo
+}
+
+// Delete deletes a pod from the unschedulable podInfoMap.
+func (u *UnschedulablePods) delete(pod *Pod) {
+	podID := u.keyFunc(pod)
+	delete(u.podInfoMap, podID)
+}
+
+// Get returns the QueuedPodInfo if a pod with the same key as the key of the given "pod"
+// is found in the map. It returns nil otherwise.
+func (u *UnschedulablePods) get(pod *Pod) *PodInfo {
+	podKey := u.keyFunc(pod)
+	if pInfo, exists := u.podInfoMap[podKey]; exists {
+		return pInfo
+	}
+	return nil
+}
+
+// Clear removes all the entries from the unschedulable podInfoMap.
+func (u *UnschedulablePods) clear() {
+	u.podInfoMap = make(map[string]*PodInfo)
+}
+
+// GetPodFullName returns a name that uniquely identifies a pod.
+func getPodFullName(pod *Pod) string {
+	// Use underscore as the delimiter because it is not allowed in pod name
+	// (DNS subdomain format).
+	return pod.name
+}
+
+// newUnschedulablePods initializes a new object of UnschedulablePods.
+func newUnschedulablePods(metricRecorder metrics.MetricRecorder) *UnschedulablePods {
+	return &UnschedulablePods{
+		podInfoMap: make(map[string]*PodInfo),
+		keyFunc:    getPodFullName,
+	}
+}
+
 type PriorityQueue struct {
 	activeQ *Heap
-	lock    sync.Mutex
-	items   []*PodInfo
+	// podBackoffQ is a heap ordered by backoff expiry. Pods which have completed backoff
+	// are popped from this heap before the scheduler looks at activeQ
+	podBackoffQ *Heap
+
+	lock  sync.Mutex
+	cond  sync.Cond
+	items []*PodInfo
+
+	// unschedulablePods holds pods that have been tried and determined unschedulable.
+	unschedulablePods *UnschedulablePods
 }
 
 func newActiveQ() *Heap {
@@ -152,4 +212,25 @@ func (h *Heap) Delete(obj interface{}) {
 	if item, ok := h.data.items[key]; ok {
 		heap.Remove(h.data, item.idx)
 	}
+}
+
+func (pq *PriorityQueue) Pop() *PodInfo {
+	pq.lock.Lock()
+	defer pq.lock.Unlock()
+
+	return pq.activeQ.Get().(*PodInfo)
+}
+
+func (pq *PriorityQueue) Push(obj *PodInfo) {
+	pq.lock.Lock()
+	defer pq.lock.Unlock()
+
+	pq.activeQ.Add(obj)
+}
+
+func (pq *PriorityQueue) Len() int {
+	pq.lock.Lock()
+	defer pq.lock.Unlock()
+
+	return pq.activeQ.Len()
 }

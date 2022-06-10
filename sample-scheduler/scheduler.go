@@ -64,7 +64,7 @@ func NewScheduler(queue *PriorityQueue) *Scheduler {
 func MakeNextPodFunc(queue *PriorityQueue) func() *PodInfo {
 	return func() *PodInfo {
 		if queue.Len() > 0 {
-			podInfo := queue.Get()
+			podInfo := queue.Pop()
 			fmt.Printf("About to try and schedule pod %s\n", podInfo.pod.name)
 			return podInfo
 		} else {
