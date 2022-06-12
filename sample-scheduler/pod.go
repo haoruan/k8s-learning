@@ -1,9 +1,10 @@
 package main
 
 type Pod struct {
-	uid      string
-	name     string
-	nodeName string
+	uid               string
+	name              string
+	nodeName          string
+	nominatedNodeName string
 }
 
 type PodInfo struct {

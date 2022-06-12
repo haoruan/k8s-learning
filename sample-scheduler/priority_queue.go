@@ -2,6 +2,7 @@ package main
 
 import (
 	"container/heap"
+	"fmt"
 	"sync"
 
 	"k8s.io/kubernetes/pkg/scheduler/metrics"
@@ -69,6 +70,163 @@ func (u *UnschedulablePods) clear() {
 	u.podInfoMap = make(map[string]*PodInfo)
 }
 
+type NominatingMode int
+
+const (
+	ModeNoop NominatingMode = iota
+	ModeOverride
+)
+
+type NominatingInfo struct {
+	NominatedNodeName string
+	NominatingMode    NominatingMode
+}
+
+// PodNominator abstracts operations to maintain nominated Pods.
+type PodNominator interface {
+	// AddNominatedPod adds the given pod to the nominator or
+	// updates it if it already exists.
+	AddNominatedPod(pod *PodInfo, nominatingInfo *NominatingInfo)
+	// DeleteNominatedPodIfExists deletes nominatedPod from internal cache. It's a no-op if it doesn't exist.
+	DeleteNominatedPodIfExists(pod *Pod)
+	// UpdateNominatedPod updates the <oldPod> with <newPod>.
+	UpdateNominatedPod(oldPod *Pod, newPodInfo *PodInfo)
+	// NominatedPodsForNode returns nominatedPods on the given node.
+	NominatedPodsForNode(nodeName string) []*PodInfo
+}
+
+// nominator is a structure that stores pods nominated to run on nodes.
+// It exists because nominatedNodeName of pod objects stored in the structure
+// may be different than what scheduler has here. We should be able to find pods
+// by their UID and update/delete them.
+type nominator struct {
+	// nominatedPods is a map keyed by a node name and the value is a list of
+	// pods which are nominated to run on the node. These are pods which can be in
+	// the activeQ or unschedulablePods.
+	nominatedPods map[string][]*PodInfo
+	// nominatedPodToNode is map keyed by a Pod UID to the node name where it is
+	// nominated.
+	nominatedPodToNode map[string]string
+
+	sync.RWMutex
+}
+
+func (ni *NominatingInfo) Mode() NominatingMode {
+	if ni == nil {
+		return ModeNoop
+	}
+	return ni.NominatingMode
+}
+
+func (npm *nominator) add(pi *PodInfo, nominatingInfo *NominatingInfo) {
+	// Always delete the pod if it already exists, to ensure we never store more than
+	// one instance of the pod.
+	npm.delete(pi.pod)
+
+	var nodeName string
+	if nominatingInfo.Mode() == ModeOverride {
+		nodeName = nominatingInfo.NominatedNodeName
+	} else if nominatingInfo.Mode() == ModeNoop {
+		if pi.pod.nominatedNodeName == "" {
+			return
+		}
+		nodeName = pi.pod.nominatedNodeName
+	}
+
+	npm.nominatedPodToNode[pi.pod.uid] = nodeName
+	for _, npi := range npm.nominatedPods[nodeName] {
+		if npi.pod.uid == pi.pod.uid {
+			fmt.Printf("Pod already exists in the nominator, pod %s\n", npi.pod.name)
+			return
+		}
+	}
+	npm.nominatedPods[nodeName] = append(npm.nominatedPods[nodeName], pi)
+}
+
+func (npm *nominator) delete(p *Pod) {
+	nnn, ok := npm.nominatedPodToNode[p.uid]
+	if !ok {
+		return
+	}
+	for i, np := range npm.nominatedPods[nnn] {
+		if np.pod.uid == p.uid {
+			npm.nominatedPods[nnn] = append(npm.nominatedPods[nnn][:i], npm.nominatedPods[nnn][i+1:]...)
+			if len(npm.nominatedPods[nnn]) == 0 {
+				delete(npm.nominatedPods, nnn)
+			}
+			break
+		}
+	}
+	delete(npm.nominatedPodToNode, p.uid)
+}
+
+// NominatedPodsForNode returns a copy of pods that are nominated to run on the given node,
+// but they are waiting for other pods to be removed from the node.
+func (npm *nominator) NominatedPodsForNode(nodeName string) []*PodInfo {
+	npm.RLock()
+	defer npm.RUnlock()
+	// Make a copy of the nominated Pods so the caller can mutate safely.
+	pods := make([]*PodInfo, len(npm.nominatedPods[nodeName]))
+	for i := 0; i < len(pods); i++ {
+		pods[i] = npm.nominatedPods[nodeName][i]
+	}
+	return pods
+}
+
+// AddNominatedPod adds a pod to the nominated pods of the given node.
+// This is called during the preemption process after a node is nominated to run
+// the pod. We update the structure before sending a request to update the pod
+// object to avoid races with the following scheduling cycles.
+func (npm *nominator) AddNominatedPod(pi *PodInfo, nominatingInfo *NominatingInfo) {
+	npm.Lock()
+	npm.add(pi, nominatingInfo)
+	npm.Unlock()
+}
+
+// DeleteNominatedPodIfExists deletes <pod> from nominatedPods.
+func (npm *nominator) DeleteNominatedPodIfExists(pod *Pod) {
+	npm.Lock()
+	npm.delete(pod)
+	npm.Unlock()
+}
+
+// UpdateNominatedPod updates the <oldPod> with <newPod>.
+func (npm *nominator) UpdateNominatedPod(oldPod *Pod, newPodInfo *PodInfo) {
+	npm.Lock()
+	defer npm.Unlock()
+	// In some cases, an Update event with no "NominatedNode" present is received right
+	// after a node("NominatedNode") is reserved for this pod in memory.
+	// In this case, we need to keep reserving the NominatedNode when updating the pod pointer.
+	var nominatingInfo *NominatingInfo
+	// We won't fall into below `if` block if the Update event represents:
+	// (1) NominatedNode info is added
+	// (2) NominatedNode info is updated
+	// (3) NominatedNode info is removed
+	if oldPod.nominatedNodeName == "" && newPodInfo.pod.nominatedNodeName == "" {
+		if nnn, ok := npm.nominatedPodToNode[oldPod.uid]; ok {
+			// This is the only case we should continue reserving the NominatedNode
+			nominatingInfo = &NominatingInfo{
+				NominatingMode:    ModeOverride,
+				NominatedNodeName: nnn,
+			}
+		}
+	}
+	// We update irrespective of the nominatedNodeName changed or not, to ensure
+	// that pod pointer is updated.
+	npm.delete(oldPod)
+	npm.add(newPodInfo, nominatingInfo)
+}
+
+// NewPodNominator creates a nominator as a backing of framework.PodNominator.
+// A podLister is passed in so as to check if the pod exists
+// before adding its nominatedNode info.
+func NewPodNominator() PodNominator {
+	return &nominator{
+		nominatedPods:      make(map[string][]*PodInfo),
+		nominatedPodToNode: make(map[string]string),
+	}
+}
+
 // GetPodFullName returns a name that uniquely identifies a pod.
 func getPodFullName(pod *Pod) string {
 	// Use underscore as the delimiter because it is not allowed in pod name
@@ -89,6 +247,7 @@ type PriorityQueue struct {
 	// podBackoffQ is a heap ordered by backoff expiry. Pods which have completed backoff
 	// are popped from this heap before the scheduler looks at activeQ
 	podBackoffQ *Heap
+	PodNominator
 
 	lock  sync.Mutex
 	cond  sync.Cond
@@ -221,16 +380,45 @@ func (pq *PriorityQueue) Pop() *PodInfo {
 	return pq.activeQ.Get().(*PodInfo)
 }
 
-func (pq *PriorityQueue) Push(obj *PodInfo) {
-	pq.lock.Lock()
-	defer pq.lock.Unlock()
-
-	pq.activeQ.Add(obj)
-}
-
 func (pq *PriorityQueue) Len() int {
 	pq.lock.Lock()
 	defer pq.lock.Unlock()
 
 	return pq.activeQ.Len()
+}
+
+// Add adds a pod to the active queue. It should be called only when a new pod
+// is added so there is no chance the pod is already in active/unschedulable/backoff queues
+func (p *PriorityQueue) Add(pInfo *PodInfo) error {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	p.activeQ.Add(pInfo)
+	if p.unschedulablePods.get(pInfo.pod) != nil {
+		fmt.Printf("Error: pod is already in the unschedulable queue, pod %s\n", pInfo.pod.name)
+		p.unschedulablePods.delete(pInfo.pod)
+	}
+	// Delete pod from backoffQ if it is backing off
+	p.podBackoffQ.Delete(pInfo)
+
+	p.PodNominator.AddNominatedPod(pInfo, nil)
+	p.cond.Broadcast()
+
+	return nil
+}
+
+// Activate moves the given pods to activeQ iff they're in unschedulablePods or backoffQ.
+func (p *PriorityQueue) Activate(pods map[string]*Pod) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	activated := false
+	for _, pod := range pods {
+		if p.activate(pod) {
+			activated = true
+		}
+	}
+
+	if activated {
+		p.cond.Broadcast()
+	}
 }
