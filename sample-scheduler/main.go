@@ -72,7 +72,7 @@ func main() {
 	}
 
 	for _, podInfo := range createPodInfos(10) {
-		queue.Push(podInfo)
+		queue.Add(podInfo)
 	}
 
 	sched.Run(ctx)

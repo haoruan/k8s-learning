@@ -1,5 +1,7 @@
 package main
 
+import "time"
+
 type Pod struct {
 	uid               string
 	name              string
@@ -10,6 +12,7 @@ type Pod struct {
 type PodInfo struct {
 	pod           *Pod
 	schedulerName string
+	timestamp     time.Time
 	t             int
 	idx           int
 }
