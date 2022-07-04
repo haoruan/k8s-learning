@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 )
@@ -50,6 +51,10 @@ func (pl *NodeName) Filter(ctx context.Context, pod *Pod, nodeInfo *NodeInfo) er
 
 	if pod.nodeName != nodeName {
 		return fmt.Errorf("%s", ErrReason)
+	}
+
+	if rand.Intn(2) == 0 {
+		return fmt.Errorf("unlucky %s-%s", pod.name, nodeName)
 	}
 
 	return nil

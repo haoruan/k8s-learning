@@ -63,7 +63,7 @@ func createPodInfos(n int) []*PodInfo {
 }
 
 func main() {
-	queue := &PriorityQueue{}
+	queue := NewPriorityQueue()
 	ctx := SetupSignalContext()
 	sched := NewScheduler(queue)
 
@@ -75,5 +75,8 @@ func main() {
 		queue.Add(podInfo)
 	}
 
-	sched.Run(ctx)
+	go sched.Run(ctx)
+
+	<-ctx.Done()
+	sched.Close()
 }

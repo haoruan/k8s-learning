@@ -47,6 +47,12 @@ type Scheduler struct {
 	Profiles           map[string]Framework
 	Extenders          []Extender
 	nextStartNodeIndex int
+	SchedulingQueue    *PriorityQueue
+	wg                 sync.WaitGroup
+
+	// Error is called if there is an error. It is passed the pod in
+	// question, and the error
+	Error func(*PodInfo, error)
 }
 
 func NewScheduler(queue *PriorityQueue) *Scheduler {
@@ -58,6 +64,8 @@ func NewScheduler(queue *PriorityQueue) *Scheduler {
 		nodeInfoSnapshot: NewEmptySnapshot(),
 		NextPod:          MakeNextPodFunc(queue),
 		Profiles:         profiles,
+		SchedulingQueue:  queue,
+		Error:            MakeDefaultErrorFunc(queue),
 	}
 }
 
@@ -73,17 +81,38 @@ func MakeNextPodFunc(queue *PriorityQueue) func() *PodInfo {
 	}
 }
 
+// MakeDefaultErrorFunc construct a function to handle pod scheduler error
+func MakeDefaultErrorFunc(podQueue *PriorityQueue) func(*PodInfo, error) {
+	return func(podInfo *PodInfo, err error) {
+		if err := podQueue.AddUnschedulableIfNotPresent(podInfo, podQueue.SchedulingCycle()); err != nil {
+			fmt.Printf("Error occurred: %s\n", err)
+		}
+	}
+}
+
 func (sched *Scheduler) Run(ctx context.Context) {
+	sched.SchedulingQueue.Run()
+	sched.wg.Add(1)
+	defer fmt.Printf("scheduler stopped\n")
+
 loop:
 	for {
 		select {
 		case <-ctx.Done():
+			sched.wg.Done()
 			break loop
 		default:
 			sched.scheduleOne(ctx)
 			time.Sleep(time.Second)
 		}
 	}
+}
+
+func (sched *Scheduler) Close() {
+	fmt.Printf("Closing scheduler\n")
+	defer fmt.Printf("Closed scheduler\n")
+	sched.SchedulingQueue.Close()
+	sched.wg.Wait()
 }
 
 func (sched *Scheduler) frameworkForPod(pod *PodInfo) Framework {
@@ -113,6 +142,7 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 	//    If preemption was successful, let the current pod be aware of the nominated node.
 	//    Handle the error, get the next pod and start over.
 	if err != nil {
+		sched.Error(podInfo, err)
 		fmt.Printf("%s\n", err)
 		return
 	}

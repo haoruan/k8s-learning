@@ -65,9 +65,9 @@ func (u *UnschedulablePods) get(pod *Pod) *PodInfo {
 }
 
 // Clear removes all the entries from the unschedulable podInfoMap.
-func (u *UnschedulablePods) clear() {
-	u.podInfoMap = make(map[string]*PodInfo)
-}
+// func (u *UnschedulablePods) clear() {
+// 	u.podInfoMap = make(map[string]*PodInfo)
+// }
 
 type NominatingMode int
 
@@ -233,6 +233,17 @@ func getPodFullName(pod *Pod) string {
 	return pod.name
 }
 
+// GetPodFullName returns a name that uniquely identifies a pod.
+func getPodFullNameWithError(obj interface{}) (string, error) {
+	// Use underscore as the delimiter because it is not allowed in pod name
+	// (DNS subdomain format).
+	return obj.(*PodInfo).pod.name, nil
+}
+
+func podLess(item1, item2 interface{}) bool {
+	return item1.(*heapItem).obj.(*PodInfo).t < item2.(*heapItem).obj.(*PodInfo).t
+}
+
 // newUnschedulablePods initializes a new object of UnschedulablePods.
 func newUnschedulablePods() *UnschedulablePods {
 	return &UnschedulablePods{
@@ -251,12 +262,13 @@ type PriorityQueue struct {
 	podInitialBackoffDuration         time.Duration
 	podMaxInUnschedulablePodsDuration time.Duration
 
+	schedulingCycle  int64
 	moveRequestCycle int64
 	stopCh           chan struct{}
 
-	lock  sync.Mutex
-	cond  sync.Cond
-	items []*PodInfo
+	lock   sync.Mutex
+	cond   sync.Cond
+	closed bool
 
 	// unschedulablePods holds pods that have been tried and determined unschedulable.
 	unschedulablePods *UnschedulablePods
@@ -265,14 +277,22 @@ type PriorityQueue struct {
 func newActiveQ() *Heap {
 	return &Heap{
 		data: &data{
-			items: make(map[string]*heapItem),
+			items:    make(map[string]*heapItem),
+			keyFunc:  getPodFullNameWithError,
+			lessFunc: podLess,
 		},
 	}
 }
 
 func NewPriorityQueue() *PriorityQueue {
 	return &PriorityQueue{
-		activeQ: newActiveQ(),
+		activeQ:                           newActiveQ(),
+		podBackoffQ:                       newActiveQ(),
+		unschedulablePods:                 newUnschedulablePods(),
+		podInitialBackoffDuration:         1 * time.Second,
+		podMaxInUnschedulablePodsDuration: 10 * time.Second,
+		PodNominator:                      NewPodNominator(),
+		stopCh:                            make(chan struct{}),
 	}
 }
 
@@ -297,7 +317,7 @@ func (d *data) Pop() any {
 	}
 	delete(d.items, v.key)
 
-	return item
+	return v
 }
 
 func (d *data) Len() int {
@@ -384,11 +404,20 @@ func (h *Heap) Delete(obj interface{}) {
 	}
 }
 
-func (pq *PriorityQueue) Pop() *PodInfo {
-	pq.lock.Lock()
-	defer pq.lock.Unlock()
+func (p *PriorityQueue) Pop() *PodInfo {
+	p.lock.Lock()
+	defer p.lock.Unlock()
 
-	return pq.activeQ.Pop().(*PodInfo)
+	for p.activeQ.Len() == 0 {
+		p.cond.Wait()
+
+		if p.closed {
+			return nil
+		}
+	}
+
+	p.schedulingCycle++
+	return p.activeQ.Pop().(*heapItem).obj.(*PodInfo)
 }
 
 func (pq *PriorityQueue) Len() int {
@@ -417,16 +446,20 @@ func (p *PriorityQueue) Add(pInfo *PodInfo) error {
 	return nil
 }
 
+func (p *PriorityQueue) SchedulingCycle() int64 {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	return p.schedulingCycle
+}
+
 // Activate moves the given pods to activeQ iff they're in unschedulablePods or backoffQ.
-func (p *PriorityQueue) Activate(pods map[string]*Pod) {
+func (p *PriorityQueue) Activate(pod *Pod) {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
 	activated := false
-	for _, pod := range pods {
-		if p.activate(pod) {
-			activated = true
-		}
+	if p.activate(pod) {
+		activated = true
 	}
 
 	if activated {
@@ -461,11 +494,12 @@ func (p *PriorityQueue) Run() {
 	}()
 }
 
+// Close closes the priority queue.
 func (p *PriorityQueue) Close() {
 	p.lock.Lock()
 	defer p.lock.Unlock()
-
 	close(p.stopCh)
+	p.closed = true
 	p.cond.Broadcast()
 }
 
@@ -526,6 +560,7 @@ func (p *PriorityQueue) AddUnschedulableIfNotPresent(pInfo *PodInfo, podScheduli
 	if p.moveRequestCycle >= podSchedulingCycle {
 		p.podBackoffQ.Add(pInfo)
 	} else {
+		fmt.Printf("Add or update %s in unschedule\n", pInfo.pod.name)
 		p.unschedulablePods.addOrUpdate(pInfo)
 
 	}
@@ -584,14 +619,16 @@ func (p *PriorityQueue) movePodsToActiveOrBackoffQueue(podInfoList []*PodInfo) {
 	for _, pInfo := range podInfoList {
 		pod := pInfo.pod
 		if pInfo.timestamp.Add(p.podInitialBackoffDuration).After(time.Now()) {
+			fmt.Printf("Moving pod %s to backoff\n", pInfo.pod.name)
 			p.podBackoffQ.Add(pInfo)
 		} else {
+			fmt.Printf("Moving pod %s to active\n", pInfo.pod.name)
 			p.activeQ.Add(pInfo)
 			activated = true
 		}
 		p.unschedulablePods.delete(pod)
 	}
-	// p.moveRequestCycle = p.schedulingCycle
+	p.moveRequestCycle = p.schedulingCycle
 	if activated {
 		p.cond.Broadcast()
 	}
