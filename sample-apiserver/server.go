@@ -9,30 +9,80 @@ import (
 	"time"
 )
 
+const (
+	defaultKeepAlivePeriod = 3 * time.Minute
+)
+
 func Run(stopCh <-chan struct{}) {
-	CreateServerChain()
-	run(stopCh)
+	s, err := CreateServerChain()
+	if err != nil {
+		fmt.Printf("%s\n", err)
+		return
+	}
+
+	run(s.Handler.Director, stopCh)
 }
 
-func run(stopCh <-chan struct{}) {
-
+func run(handler http.Handler, stopCh <-chan struct{}) {
+	err := serve(handler, stopCh)
+	if err != nil {
+		fmt.Printf("%s\n", err)
+	}
 }
 
-func serve(handler http.Handler) {
+func serve(handler http.Handler, stopCh <-chan struct{}) error {
+	//tlsConfig := &tls.Config{
+	//	MinVersion: tls.VersionTLS12,
+	//	NextProtos: []string{"h2", "http/1.1"},
+	//}
+	ln, err := net.Listen("tcp", ":3333")
+	if err != nil {
+		return err
+	}
+
 	secureServer := &http.Server{
-		Addr:              "",
-		Handler:           handler,
-		TLSConfig:         &tls.Config{},
+		Addr:    "",
+		Handler: handler,
+		// TLSConfig:         tlsConfig,
 		MaxHeaderBytes:    1 << 20,
 		ReadHeaderTimeout: 32 * time.Second,
 	}
 
-	runServer(secureServer)
+	serverShutdownCh, err := runServer(secureServer, ln, stopCh)
+	if err != nil {
+		return err
+	}
+
+	<-serverShutdownCh
+
+	return nil
 }
 
-func runServer(server *http.Server, stopCh <-chan struct{}) {
+// tcpKeepAliveListener sets TCP keep-alive timeouts on accepted
+// connections. It's used by ListenAndServe and ListenAndServeTLS so
+// dead TCP connections (e.g. closing laptop mid-download) eventually
+// go away.
+//
+// Copied from Go 1.7.2 net/http/server.go
+type tcpKeepAliveListener struct {
+	net.Listener
+}
+
+func (ln tcpKeepAliveListener) Accept() (net.Conn, error) {
+	c, err := ln.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	if tc, ok := c.(*net.TCPConn); ok {
+		tc.SetKeepAlive(true)
+		tc.SetKeepAlivePeriod(defaultKeepAlivePeriod)
+	}
+	return c, nil
+}
+
+func runServer(server *http.Server, ln net.Listener, stopCh <-chan struct{}) (<-chan struct{}, error) {
 	// Shutdown server gracefully.
-	serverShutdownCh, listenerStoppedCh := make(chan struct{}), make(chan struct{})
+	serverShutdownCh := make(chan struct{})
 	go func() {
 		defer close(serverShutdownCh)
 		<-stopCh
@@ -42,8 +92,6 @@ func runServer(server *http.Server, stopCh <-chan struct{}) {
 	}()
 
 	go func() {
-		defer close(listenerStoppedCh)
-
 		var listener net.Listener
 		listener = tcpKeepAliveListener{ln}
 		if server.TLSConfig != nil {
@@ -61,13 +109,18 @@ func runServer(server *http.Server, stopCh <-chan struct{}) {
 		}
 	}()
 
-	return serverShutdownCh, listenerStoppedCh, nil
+	return serverShutdownCh, nil
 }
 
-func CreateServerChain() {
+func CreateServerChain() (*GenericAPIServer, error) {
 	config := Config{}
 	completeConfig := config.Complete()
-	completeConfig.NewAPIServer()
+	s, err := completeConfig.NewAPIServer()
+	if err != nil {
+		return nil, err
+	}
+
+	return s, nil
 }
 
 func CreateKubeAPIServer() {

@@ -30,7 +30,5 @@ func SetupSignalContext() context.Context {
 func main() {
 	ctx := SetupSignalContext()
 
-	Run()
-
-	<-ctx.Done()
+	Run(ctx.Done())
 }
