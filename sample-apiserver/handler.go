@@ -132,3 +132,7 @@ func serviceErrorHandler(serviceErr restful.ServiceError, request *restful.Reque
 	resp.WriteHeader(serviceErr.Code)
 	resp.Write([]byte(serviceErr.Message))
 }
+
+func (a *APIServerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	a.FullHandlerChain.ServeHTTP(w, r)
+}

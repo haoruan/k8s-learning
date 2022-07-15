@@ -14,23 +14,23 @@ const (
 )
 
 func Run(stopCh <-chan struct{}) {
-	s, err := CreateServerChain()
+	s, err := CreateServerChain(NewConfig())
 	if err != nil {
 		fmt.Printf("%s\n", err)
 		return
 	}
 
-	run(s.Handler.FullHandlerChain, stopCh)
+	s.run(stopCh)
 }
 
-func run(handler http.Handler, stopCh <-chan struct{}) {
-	err := serve(handler, stopCh)
+func (s *Instance) run(stopCh <-chan struct{}) {
+	err := s.serve(stopCh)
 	if err != nil {
 		fmt.Printf("%s\n", err)
 	}
 }
 
-func serve(handler http.Handler, stopCh <-chan struct{}) error {
+func (s *Instance) serve(stopCh <-chan struct{}) error {
 	//tlsConfig := &tls.Config{
 	//	MinVersion: tls.VersionTLS12,
 	//	NextProtos: []string{"h2", "http/1.1"},
@@ -42,7 +42,7 @@ func serve(handler http.Handler, stopCh <-chan struct{}) error {
 
 	secureServer := &http.Server{
 		Addr:    "",
-		Handler: handler,
+		Handler: s.genericAPIServer.Handler,
 		// TLSConfig:         tlsConfig,
 		MaxHeaderBytes:    1 << 20,
 		ReadHeaderTimeout: 32 * time.Second,
@@ -112,17 +112,22 @@ func runServer(server *http.Server, ln net.Listener, stopCh <-chan struct{}) (<-
 	return serverShutdownCh, nil
 }
 
-func CreateServerChain() (*GenericAPIServer, error) {
-	completeConfig := NewConfig().Complete()
-	s, err := completeConfig.NewAPIServer()
+func CreateServerChain(config *Config) (*Instance, error) {
+	kubeAPIServer, err := CreateKubeAPIServer(config)
+	if err != nil {
+		return nil, err
+	}
+
+	return kubeAPIServer, nil
+}
+
+func CreateKubeAPIServer(config *Config) (*Instance, error) {
+	s, err := config.Complete().NewAPIServer()
 	if err != nil {
 		return nil, err
 	}
 
 	return s, nil
-}
-
-func CreateKubeAPIServer() {
 
 }
 

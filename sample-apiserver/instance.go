@@ -8,6 +8,10 @@ import (
 	"github.com/emicklei/go-restful"
 )
 
+type Instance struct {
+	genericAPIServer *GenericAPIServer
+}
+
 type consumeType struct {
 	Name string `json:"name"`
 }
@@ -111,7 +115,7 @@ func handler(req *restful.Request, res *restful.Response) {
 	WriteRawJSON(http.StatusOK, obj, res.ResponseWriter)
 }
 
-func (c completedConfig) NewAPIServer() (*GenericAPIServer, error) {
+func (c completedConfig) NewAPIServer() (*Instance, error) {
 	s, err := c.NewServer("sample-apiserver")
 	if err != nil {
 		return nil, err
@@ -121,5 +125,5 @@ func (c completedConfig) NewAPIServer() (*GenericAPIServer, error) {
 
 	s.Handler.GoRestfulContainer.Add(ws)
 
-	return s, nil
+	return &Instance{s}, nil
 }
