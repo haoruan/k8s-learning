@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io/ioutil"
 	"net/http"
-	"net/url"
 
 	"github.com/emicklei/go-restful"
 )
@@ -14,8 +13,8 @@ type consumeType struct {
 }
 
 type produceType struct {
-	url  *url.URL
-	body consumeType
+	Path string      `json:"path"`
+	Body consumeType `json:"body"`
 }
 
 func newWebService(prefix string) *restful.WebService {
@@ -102,7 +101,7 @@ func handler(req *restful.Request, res *restful.Response) {
 	var oriBody consumeType
 	json.Unmarshal(body, &oriBody)
 
-	obj := produceType{url, oriBody}
+	obj := produceType{url.Path, oriBody}
 
 	if err != nil {
 		WriteRawJSON(http.StatusInternalServerError, nil, res.ResponseWriter)

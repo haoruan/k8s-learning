@@ -20,7 +20,7 @@ func Run(stopCh <-chan struct{}) {
 		return
 	}
 
-	run(s.Handler.Director, stopCh)
+	run(s.Handler.FullHandlerChain, stopCh)
 }
 
 func run(handler http.Handler, stopCh <-chan struct{}) {
@@ -113,8 +113,7 @@ func runServer(server *http.Server, ln net.Listener, stopCh <-chan struct{}) (<-
 }
 
 func CreateServerChain() (*GenericAPIServer, error) {
-	config := Config{}
-	completeConfig := config.Complete()
+	completeConfig := NewConfig().Complete()
 	s, err := completeConfig.NewAPIServer()
 	if err != nil {
 		return nil, err

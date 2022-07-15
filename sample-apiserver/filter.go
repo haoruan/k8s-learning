@@ -6,15 +6,15 @@ import (
 )
 
 func WithAuthorization(handler http.Handler) http.Handler {
-	fmt.Printf("Auhorizing...\n")
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		fmt.Printf("Auhorizing...\n")
 		handler.ServeHTTP(w, req)
 	})
 }
 
 func WithLogging(handler http.Handler) http.Handler {
-	fmt.Printf("Logging...\n")
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		fmt.Printf("Logging...\n")
 		handler.ServeHTTP(w, req)
 	})
 }
