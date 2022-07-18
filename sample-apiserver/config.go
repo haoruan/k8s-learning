@@ -9,6 +9,14 @@ type GenericAPIServer struct {
 	Handler *APIServerHandler
 }
 
+type DelegationTarget interface {
+	UnprotectedHanlder() http.Handler
+}
+
+func (s *GenericAPIServer) UnprotectedHanlder() http.Handler {
+	return s.Handler.Director
+}
+
 type Config struct {
 	// BuildHandlerChainFunc allows you to build custom handler chains by decorating the apiHandler.
 	BuildHandlerChainFunc func(apiHandler http.Handler, c *Config) (secure http.Handler)

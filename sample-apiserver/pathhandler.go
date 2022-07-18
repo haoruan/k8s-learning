@@ -27,7 +27,7 @@ type PathHandler struct {
 	pathToHandler map[string]http.Handler
 
 	// this has to be sorted by most slashes then by length
-	prefixHandlers []prefixHandler
+	prefixHandler map[string]http.Handler
 
 	// notFoundHandler is the handler to use for satisfying requests with no other match
 	notFoundHandler http.Handler
@@ -37,6 +37,7 @@ func NewPathHandler(name string) *PathHandler {
 	return &PathHandler{
 		muxName:         name,
 		pathToHandler:   make(map[string]http.Handler),
+		prefixHandler:   make(map[string]http.Handler),
 		notFoundHandler: http.NotFoundHandler(),
 	}
 }
@@ -51,10 +52,14 @@ func (m *PathHandler) Handle(path string, handler http.Handler) {
 }
 
 func (m *PathHandler) HandlePrefix(path string, handler http.Handler) {
+	if !strings.HasSuffix(path, "/") {
+		panic(fmt.Sprintf("%q must end in a trailing slash", path))
+	}
+
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
-	m.prefixHandlers = append(m.prefixHandlers, prefixHandler{path, handler})
+	m.prefixHandler[path] = handler
 }
 
 // ServeHTTP makes it an http.Handler
@@ -65,10 +70,10 @@ func (h *PathHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for _, prefixHandler := range h.prefixHandlers {
-		if strings.HasPrefix(r.URL.Path, prefixHandler.prefix) {
-			fmt.Printf("%v: %q satisfied by prefix %v\n", h.muxName, r.URL.Path, prefixHandler.prefix)
-			prefixHandler.handler.ServeHTTP(w, r)
+	for prefix, handler := range h.prefixHandler {
+		if strings.HasPrefix(r.URL.Path, prefix) {
+			fmt.Printf("%v: %q satisfied by prefix %v\n", h.muxName, r.URL.Path, prefix)
+			handler.ServeHTTP(w, r)
 			return
 		}
 	}

@@ -15,7 +15,7 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.localDelegate.ServeHTTP(w, r)
 }
 
-func (c completedConfig) NewAggregator() (*Aggregator, error) {
+func (c completedConfig) NewAggregator(delegationTarget DelegationTarget) (*Aggregator, error) {
 	s, err := c.NewServer("sample-aggregator")
 	if err != nil {
 		return nil, err
@@ -23,25 +23,22 @@ func (c completedConfig) NewAggregator() (*Aggregator, error) {
 
 	aggregator := &Aggregator{
 		genericAPIServer: s,
-		delegateHanlder:  s.Handler.NonGoRestfulMux,
+		delegateHanlder:  delegationTarget.UnprotectedHanlder(),
 	}
 
 	aggregator.addAPIService()
 
-	ws := installLegacyAPI()
-
-	s.Handler.GoRestfulContainer.Add(ws)
-
 	return aggregator, nil
 }
 
-func (s *Aggregator) addAPIService() error {
+func (a *Aggregator) addAPIService() error {
 	proxyPath := "/api"
 	proxyHandler := &proxyHandler{
-		localDelegate: s.delegateHanlder,
+		localDelegate: a.delegateHanlder,
 	}
 
-	s.genericAPIServer.Handler.NonGoRestfulMux.Handle(proxyPath, proxyHandler)
+	a.genericAPIServer.Handler.NonGoRestfulMux.Handle(proxyPath, proxyHandler)
+	a.genericAPIServer.Handler.NonGoRestfulMux.HandlePrefix(proxyPath+"/", proxyHandler)
 
 	return nil
 }

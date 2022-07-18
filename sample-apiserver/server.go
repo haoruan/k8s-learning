@@ -23,14 +23,14 @@ func Run(stopCh <-chan struct{}) {
 	s.run(stopCh)
 }
 
-func (s *Instance) run(stopCh <-chan struct{}) {
+func (s *Aggregator) run(stopCh <-chan struct{}) {
 	err := s.serve(stopCh)
 	if err != nil {
 		fmt.Printf("%s\n", err)
 	}
 }
 
-func (s *Instance) serve(stopCh <-chan struct{}) error {
+func (s *Aggregator) serve(stopCh <-chan struct{}) error {
 	//tlsConfig := &tls.Config{
 	//	MinVersion: tls.VersionTLS12,
 	//	NextProtos: []string{"h2", "http/1.1"},
@@ -112,13 +112,18 @@ func runServer(server *http.Server, ln net.Listener, stopCh <-chan struct{}) (<-
 	return serverShutdownCh, nil
 }
 
-func CreateServerChain(config *Config) (*Instance, error) {
+func CreateServerChain(config *Config) (*Aggregator, error) {
 	kubeAPIServer, err := CreateKubeAPIServer(config)
 	if err != nil {
 		return nil, err
 	}
 
-	return kubeAPIServer, nil
+	aggregator, err := CreateAggregatorServer(config, kubeAPIServer.genericAPIServer)
+	if err != nil {
+		return nil, err
+	}
+
+	return aggregator, nil
 }
 
 func CreateKubeAPIServer(config *Config) (*Instance, error) {
@@ -131,8 +136,12 @@ func CreateKubeAPIServer(config *Config) (*Instance, error) {
 
 }
 
-func CreateAggregatorServer() {
-
+func CreateAggregatorServer(config *Config, delegationTarget DelegationTarget) (*Aggregator, error) {
+	s, err := config.Complete().NewAggregator(delegationTarget)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 func CreateAPIExtensionsServer() {
