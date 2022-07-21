@@ -7,14 +7,6 @@ import (
 	"sync"
 )
 
-// prefixHandler holds the prefix it should match and the handler to use
-type prefixHandler struct {
-	// prefix is the prefix to test for a request match
-	prefix string
-	// handler is used to satisfy matching requests
-	handler http.Handler
-}
-
 // pathHandler is an http.Handler that will satisfy requests first by exact match, then by prefix,
 // then by notFoundHandler
 type PathHandler struct {

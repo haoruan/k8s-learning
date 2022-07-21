@@ -30,20 +30,41 @@ func (s *Aggregator) run(stopCh <-chan struct{}) {
 	}
 }
 
+func tlsConfig(stopCh <-chan struct{}) (*tls.Config, error) {
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		NextProtos: []string{"h2", "http/1.1"},
+	}
+
+	dynamicCertKeyPairContent := NewDynamicCertKeyPairContent("sample-cert", "test.pem", "test.cert")
+	dynamicServingCertificateController := NewDynamicServingCertificateController()
+
+	dynamicCertKeyPairContent.AddListener(dynamicServingCertificateController)
+
+	dynamicCertKeyPairContent.Run(stopCh)
+	dynamicServingCertificateController.Run(stopCh)
+
+	tlsConfig.GetConfigForClient = dynamicServingCertificateController.GetConfigForClient
+
+	return tlsConfig, nil
+
+}
+
 func (s *Aggregator) serve(stopCh <-chan struct{}) error {
-	//tlsConfig := &tls.Config{
-	//	MinVersion: tls.VersionTLS12,
-	//	NextProtos: []string{"h2", "http/1.1"},
-	//}
+	tlsConfig, err := tlsConfig(stopCh)
+	if err != nil {
+		return err
+	}
+
 	ln, err := net.Listen("tcp", ":3333")
 	if err != nil {
 		return err
 	}
 
 	secureServer := &http.Server{
-		Addr:    "",
-		Handler: s.genericAPIServer.Handler,
-		// TLSConfig:         tlsConfig,
+		Addr:              "",
+		Handler:           s.genericAPIServer.Handler,
+		TLSConfig:         tlsConfig,
 		MaxHeaderBytes:    1 << 20,
 		ReadHeaderTimeout: 32 * time.Second,
 	}
