@@ -34,14 +34,18 @@ func tlsConfig(stopCh <-chan struct{}) (*tls.Config, error) {
 	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		NextProtos: []string{"h2", "http/1.1"},
+		ClientAuth: tls.RequireAndVerifyClientCert,
 	}
 
-	dynamicCertKeyPairContent := NewDynamicCertKeyPairContent("sample-cert", "test.pem", "test.cert")
-	dynamicServingCertificateController := NewDynamicServingCertificateController()
+	dynamicCertKeyPairContent := NewDynamicCertKeyPairContent("sample-cert", "/run/kubernetes/serving-kube-apiserver.crt", "/run/kubernetes/serving-kube-apiserver.key")
+	dynamicFileCAContent := NewDynamicFileCAContent("sample-ca", "/run/kubernetes/client-ca.crt")
+	dynamicServingCertificateController := NewDynamicServingCertificateController(tlsConfig, dynamicFileCAContent, dynamicCertKeyPairContent)
 
+	dynamicFileCAContent.AddListener(dynamicServingCertificateController)
 	dynamicCertKeyPairContent.AddListener(dynamicServingCertificateController)
 
 	dynamicCertKeyPairContent.Run(stopCh)
+	dynamicFileCAContent.Run(stopCh)
 	dynamicServingCertificateController.Run(stopCh)
 
 	tlsConfig.GetConfigForClient = dynamicServingCertificateController.GetConfigForClient

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"k8s.io/client-go/util/cert"
 	"k8s.io/client-go/util/workqueue"
 )
 
@@ -26,9 +27,9 @@ type DynamicServingCertificateController struct {
 	baseTLSConfig *tls.Config
 
 	// clientCA provides the very latest content of the ca bundle
-	// clientCA CAContentProvider
+	clientCA *DynamicFileCAContent
 	// servingCert provides the very latest content of the default serving certificate
-	servingCert DynamicCertKeyPairContent
+	servingCert *DynamicCertKeyPairContent
 	// sniCerts are a list of CertKeyContentProvider with associated names used for SNI
 	// sniCerts []SNICertKeyContentProvider
 
@@ -46,9 +47,15 @@ type DynamicServingCertificateController struct {
 // dynamicCertificateContent holds the content that overrides the baseTLSConfig
 type dynamicCertificateContent struct {
 	// clientCA holds the content for the clientCA bundle
-	// clientCA    caBundleContent
+	clientCA    caBundleContent
 	servingCert certKeyContent
 	// sniCerts    []sniCertKeyContent
+}
+
+// caBundleContent holds the content for the clientCA bundle.  Wrapping the bytes makes the Equals work nicely with the
+// method receiver.
+type caBundleContent struct {
+	caBundle []byte
 }
 
 // certKeyContent holds the content for the cert and key
@@ -57,8 +64,17 @@ type certKeyContent struct {
 	key  []byte
 }
 
-func NewDynamicServingCertificateController() *DynamicServingCertificateController {
-	return &DynamicServingCertificateController{queue: workqueue.New()}
+func NewDynamicServingCertificateController(
+	baseTLSConfig *tls.Config,
+	clientCA *DynamicFileCAContent,
+	servingCert *DynamicCertKeyPairContent,
+) *DynamicServingCertificateController {
+	return &DynamicServingCertificateController{
+		baseTLSConfig: baseTLSConfig,
+		clientCA:      clientCA,
+		servingCert:   servingCert,
+		queue:         workqueue.New(),
+	}
 }
 
 // GetConfigForClient is an implementation of tls.Config.GetConfigForClient
@@ -78,6 +94,13 @@ func (c *DynamicServingCertificateController) GetConfigForClient(clientHello *tl
 // newTLSContent determines the next set of content for overriding the baseTLSConfig.
 func (c *DynamicServingCertificateController) newTLSContent() (*dynamicCertificateContent, error) {
 	newContent := &dynamicCertificateContent{}
+
+	currClientCABundle := c.clientCA.CurrentCAContent()
+	// we allow removing all client ca bundles because the server is still secure when this happens. it just means
+	// that there isn't a hint to clients about which client-cert to used.  this happens when there is no client-ca
+	// yet known for authentication, which can happen in aggregated apiservers and some kube-apiserver deployment modes.
+	newContent.clientCA = caBundleContent{currClientCABundle}
+
 	cert, key := c.servingCert.CurrentCertKeyContent()
 	if len(cert) == 0 || len(key) == 0 {
 		return nil, fmt.Errorf("not loading an empty serving certificate from %s", c.servingCert.Name())
@@ -95,12 +118,24 @@ func (c *DynamicServingCertificateController) syncCert() error {
 	}
 
 	// skip if tlscontent is same
-	if bytes.Equal(newContent.servingCert.cert, c.currentlyServedContent.servingCert.cert) &&
+	if c.currentlyServedContent != nil &&
+		bytes.Equal(newContent.servingCert.cert, c.currentlyServedContent.servingCert.cert) &&
 		bytes.Equal(newContent.servingCert.key, c.currentlyServedContent.servingCert.key) {
 		return nil
 	}
 
 	newTLSConfigCopy := c.baseTLSConfig.Clone()
+
+	newClientCAPool := x509.NewCertPool()
+	newClientCAs, err := cert.ParseCertsPEM(newContent.clientCA.caBundle)
+	if err != nil {
+		return fmt.Errorf("unable to load client CA file %q: %v", string(newContent.clientCA.caBundle), err)
+	}
+	for _, cert := range newClientCAs {
+		newClientCAPool.AddCert(cert)
+	}
+
+	newTLSConfigCopy.ClientCAs = newClientCAPool
 
 	cert, err := tls.X509KeyPair(newContent.servingCert.cert, newContent.servingCert.key)
 	if err != nil {

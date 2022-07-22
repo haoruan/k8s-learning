@@ -160,12 +160,6 @@ func (c *DynamicCertKeyPairContent) loadCertKeyPair() error {
 		return fmt.Errorf("missing content for serving cert %q", c.Name())
 	}
 
-	// Ensure that the key matches the cert and both are valid
-	_, err = tls.X509KeyPair(cert, key)
-	if err != nil {
-		return err
-	}
-
 	newCertKey := &certKeyContent{
 		cert: cert,
 		key:  key,
@@ -175,6 +169,12 @@ func (c *DynamicCertKeyPairContent) loadCertKeyPair() error {
 	existing, ok := c.certKeyPair.Load().(*certKeyContent)
 	if ok && existing != nil && bytes.Equal(existing.cert, newCertKey.cert) && bytes.Equal(existing.key, newCertKey.key) {
 		return nil
+	}
+
+	// Ensure that the key matches the cert and both are valid
+	_, err = tls.X509KeyPair(cert, key)
+	if err != nil {
+		return err
 	}
 
 	c.certKeyPair.Store(newCertKey)
