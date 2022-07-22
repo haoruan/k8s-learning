@@ -73,8 +73,6 @@ func (c *DynamicCertKeyPairContent) processNextItem() bool {
 func (c *DynamicCertKeyPairContent) Run(stopCh <-chan struct{}) {
 	defer c.queue.ShutDown()
 
-	c.RunOnce()
-
 	go func() {
 	loop:
 		for {
@@ -98,6 +96,8 @@ func (c *DynamicCertKeyPairContent) Run(stopCh <-chan struct{}) {
 			}
 		}
 	}()
+
+	<-stopCh
 }
 
 func (c *DynamicCertKeyPairContent) watchCertKeyFile(stopCh <-chan struct{}) error {
@@ -109,6 +109,13 @@ func (c *DynamicCertKeyPairContent) watchCertKeyFile(stopCh <-chan struct{}) err
 		return fmt.Errorf("error creating fsnotify watcher: %v", err)
 	}
 	defer w.Close()
+
+	if err := w.Add(c.certFile); err != nil {
+		return fmt.Errorf("error adding watch for file %s: %v", c.certFile, err)
+	}
+	if err := w.Add(c.keyFile); err != nil {
+		return fmt.Errorf("error adding watch for file %s: %v", c.keyFile, err)
+	}
 
 	// Trigger a check in case the file is updated before the watch starts.
 	c.queue.Add(workItemKey)
@@ -148,6 +155,7 @@ func (c *DynamicCertKeyPairContent) handleWatchEvent(e fsnotify.Event, w *fsnoti
 
 // loadCertKeyPair determines the next set of content for the file.
 func (c *DynamicCertKeyPairContent) loadCertKeyPair() error {
+	fmt.Printf("loadCertKeyPair\n")
 	cert, err := ioutil.ReadFile(c.certFile)
 	if err != nil {
 		return err

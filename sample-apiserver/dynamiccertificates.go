@@ -182,8 +182,6 @@ func (c *DynamicServingCertificateController) processNextItem() bool {
 func (c *DynamicServingCertificateController) Run(stopCh <-chan struct{}) {
 	defer c.queue.ShutDown()
 
-	c.RunOnce()
-
 	go func() {
 	loop:
 		for {
@@ -208,6 +206,8 @@ func (c *DynamicServingCertificateController) Run(stopCh <-chan struct{}) {
 			}
 		}
 	}()
+
+	<-stopCh
 }
 
 // Enqueue a method to allow separate control loops to cause the certificate controller to trigger and read content.

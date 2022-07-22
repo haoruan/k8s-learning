@@ -44,9 +44,12 @@ func tlsConfig(stopCh <-chan struct{}) (*tls.Config, error) {
 	dynamicFileCAContent.AddListener(dynamicServingCertificateController)
 	dynamicCertKeyPairContent.AddListener(dynamicServingCertificateController)
 
-	dynamicCertKeyPairContent.Run(stopCh)
-	dynamicFileCAContent.Run(stopCh)
-	dynamicServingCertificateController.Run(stopCh)
+	dynamicCertKeyPairContent.RunOnce()
+	go dynamicCertKeyPairContent.Run(stopCh)
+	dynamicFileCAContent.RunOnce()
+	go dynamicFileCAContent.Run(stopCh)
+	dynamicServingCertificateController.RunOnce()
+	go dynamicServingCertificateController.Run(stopCh)
 
 	tlsConfig.GetConfigForClient = dynamicServingCertificateController.GetConfigForClient
 

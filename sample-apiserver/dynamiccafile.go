@@ -38,8 +38,6 @@ func NewDynamicFileCAContent(name, filename string) *DynamicFileCAContent {
 func (c *DynamicFileCAContent) Run(stopCh <-chan struct{}) {
 	defer c.queue.ShutDown()
 
-	c.RunOnce()
-
 	go func() {
 	loop:
 		for {
@@ -63,6 +61,8 @@ func (c *DynamicFileCAContent) Run(stopCh <-chan struct{}) {
 			}
 		}
 	}()
+
+	<-stopCh
 }
 
 func (c *DynamicFileCAContent) watchCAFile(stopCh <-chan struct{}) error {
@@ -74,6 +74,10 @@ func (c *DynamicFileCAContent) watchCAFile(stopCh <-chan struct{}) error {
 		return fmt.Errorf("error creating fsnotify watcher: %v", err)
 	}
 	defer w.Close()
+
+	if err := w.Add(c.filename); err != nil {
+		return fmt.Errorf("error adding watch for file %s: %v", c.filename, err)
+	}
 
 	// Trigger a check in case the file is updated before the watch starts.
 	c.queue.Add(workItemKey)
@@ -140,6 +144,7 @@ func (c *DynamicFileCAContent) Name() string {
 }
 
 func (c *DynamicFileCAContent) loadCAFile() error {
+	fmt.Printf("loadCAFile\n")
 	caBundle, err := ioutil.ReadFile(c.filename)
 	if err != nil {
 		return err
@@ -155,6 +160,8 @@ func (c *DynamicFileCAContent) loadCAFile() error {
 	if ok && existing != nil && bytes.Equal(newCaBundleContent.caBundle, existing.caBundle) {
 		return nil
 	}
+
+	fmt.Printf("Loaded a new client-ca: %s\n", c.Name())
 
 	c.caBundle.Store(newCaBundleContent)
 	return nil
